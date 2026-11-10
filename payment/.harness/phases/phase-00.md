@@ -28,7 +28,7 @@
   - Bean Validation 실패(`MethodArgumentNotValidException`) 응답 형식 통일
   - **완료 조건:** 존재하지 않는 경로나 잘못된 요청에 일관된 JSON 에러 응답이 나온다.
 
-- [ ] **0-5. Testcontainers 통합 테스트 기반**
+- [x] **0-5. Testcontainers 통합 테스트 기반**
   - MySQL 컨테이너를 띄우는 공통 테스트 설정 (`@ServiceConnection` 또는 추상 베이스 클래스)
   - 컨텍스트 로딩 테스트 하나 작성
   - **완료 조건:** 테스트가 실제 MySQL 컨테이너에서 통과한다.
