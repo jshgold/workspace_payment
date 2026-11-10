@@ -23,7 +23,7 @@
   - **완료 조건:** 애플리케이션이 뜨고, Flyway 기본 테이블(`flyway_schema_history`)이 생긴다.
   - **학습 포인트:** OSIV를 끄면 어떤 코드가 `LazyInitializationException`을 내는지, 왜 끄는지 설명할 수 있어야 한다.
 
-- [ ] **0-4. 공통 예외 처리**
+- [x] **0-4. 공통 예외 처리**
   - `ErrorCode` enum, `BusinessException`, `@RestControllerAdvice` 기반 `GlobalExceptionHandler`
   - Bean Validation 실패(`MethodArgumentNotValidException`) 응답 형식 통일
   - **완료 조건:** 존재하지 않는 경로나 잘못된 요청에 일관된 JSON 에러 응답이 나온다.
