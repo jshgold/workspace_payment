@@ -16,7 +16,7 @@
   - **완료 조건:** `docker compose up -d` 후 접속해서 `SELECT @@transaction_isolation;` 결과 확인
   - **학습 포인트:** MySQL 기본 격리수준은 `REPEATABLE-READ`다. PostgreSQL(`READ COMMITTED`)과 무엇이 다른지 한 줄로 정리해본다.
 
-- [ ] **0-3. application.yml 설정**
+- [x] **0-3. application.yml 설정**
   - `open-in-view: false`, `ddl-auto: validate`, Flyway 활성화
   - SQL 로그: Hibernate SQL과 바인딩 파라미터가 보이게 설정
   - `local` 프로필 분리
