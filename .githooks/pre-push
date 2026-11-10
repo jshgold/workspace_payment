@@ -23,7 +23,7 @@ if java_home=$(/usr/libexec/java_home -v 21 2>/dev/null); then
   export JAVA_HOME="$java_home"
 fi
 
-cd "$repo_root/circuitbreaker" || exit 1
+cd "$repo_root/payment" || exit 1
 
 echo "pre-push: ./gradlew test 실행 중..."
 # 표준입력을 Gradle이 가져가지 않도록 /dev/null로 막는다.
