@@ -9,11 +9,11 @@
 
 ## 1. 환경
 - **OS & Shell:** macOS (`zsh`)
-- **Stack:** Java 21, Spring Boot 3.x, Spring Data JPA, QueryDSL, Gradle
+- **Stack:** Java 21, Spring Boot 4.x, Spring Data JPA, QueryDSL, Gradle
 - **DB:** MySQL 8.0 (`docker-compose.yml`로 실행), 스키마는 Flyway로 관리, `ddl-auto: validate`
 - **Redis:** phase-02의 분산 락 단계부터 추가 (Redisson)
 - **Test:** 통합·동시성 테스트는 Testcontainers (MySQL, Redis)
-- **Base Package:** `com.example.commerce` <!-- 실제 패키지로 바꿀 것 -->
+- **Base Package:** `com.payment` <!-- 실제 패키지로 바꿀 것 -->
 
 ## 2. 진행 방식 (학습 모드)
 **현재 phase: `.harness/phases/phase-00.md`** <!-- 사용자가 직접 바꾼다 -->

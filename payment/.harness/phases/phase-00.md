@@ -5,13 +5,13 @@
 
 ---
 
-- [ ] **0-1. 프로젝트 생성과 의존성**
-  - Spring Boot 3.x, Java 21, Gradle
+- [x] **0-1. 프로젝트 생성과 의존성**
+  - Spring Boot 4.x, Java 21, Gradle
   - 의존성: Web, Data JPA, Validation, MySQL Driver, Lombok, Flyway(+ flyway-mysql), QueryDSL, Testcontainers(MySQL, JUnit5)
   - **완료 조건:** `./gradlew build -x test` 성공
   - **학습 포인트:** QueryDSL은 Spring Boot 3에서 설정 방식(jakarta classifier, Q클래스 생성 위치)이 바뀌었다. 무엇이 바뀌었는지 확인한다.
 
-- [ ] **0-2. docker-compose로 MySQL 실행**
+- [x] **0-2. docker-compose로 MySQL 실행**
   - MySQL 8.0, `utf8mb4`, 포트 3306, 데이터 볼륨 지정
   - **완료 조건:** `docker compose up -d` 후 접속해서 `SELECT @@transaction_isolation;` 결과 확인
   - **학습 포인트:** MySQL 기본 격리수준은 `REPEATABLE-READ`다. PostgreSQL(`READ COMMITTED`)과 무엇이 다른지 한 줄로 정리해본다.
