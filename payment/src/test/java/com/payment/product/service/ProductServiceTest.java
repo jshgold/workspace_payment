@@ -3,10 +3,15 @@ package com.payment.product.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import java.util.Optional;
+
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
 import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 import com.payment.product.domain.ProductStatus;
@@ -71,5 +76,47 @@ class ProductServiceTest {
         assertThatThrownBy(() -> productService.create(request))
                 .isInstanceOf(IllegalArgumentException.class);
         verify(productRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("존재하는 상품을 조회하면 상품 정보를 반환한다")
+    void getProduct() {
+        // given
+        Product product = Product.create("키보드", 10_000, 5);
+        given(productRepository.findById(1L)).willReturn(Optional.of(product));
+
+        // when
+        ProductResponse response = productService.getProduct(1L);
+
+        // then
+        assertThat(response.name()).isEqualTo("키보드");
+        assertThat(response.price()).isEqualTo(10_000L);
+        assertThat(response.stock()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 상품을 조회하면 PRODUCT_NOT_FOUND 예외가 난다")
+    void getProductNotFound() {
+        // given
+        given(productRepository.findById(anyLong())).willReturn(Optional.empty());
+
+        // when // then
+        assertThatThrownBy(() -> productService.getProduct(999L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("삭제된 상품을 조회하면 존재하지 않는 것과 똑같이 PRODUCT_NOT_FOUND 예외가 난다")
+    void getProductDeleted() {
+        // given
+        Product product = Product.create("키보드", 10_000, 5);
+        product.delete();
+        given(productRepository.findById(1L)).willReturn(Optional.of(product));
+
+        // when // then
+        assertThatThrownBy(() -> productService.getProduct(1L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
     }
 }

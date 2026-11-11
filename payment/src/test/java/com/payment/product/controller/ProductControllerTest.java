@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -12,6 +13,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.time.LocalDateTime;
 
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
 import com.payment.common.exception.GlobalExceptionHandler;
 import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
@@ -131,6 +134,45 @@ class ProductControllerTest {
         mockMvc.perform(post("/api/products")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json("\"키보드\"", "\"abc\"", "5")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("COMMON_002"));
+    }
+
+    @Test
+    @DisplayName("상품을 단건 조회하면 200과 상품 정보를 응답한다")
+    void getProduct() throws Exception {
+        // given
+        LocalDateTime now = LocalDateTime.of(2026, 11, 11, 10, 0);
+        given(productService.getProduct(1L))
+                .willReturn(new ProductResponse(1L, "키보드", 10_000, 5, ProductStatus.ON_SALE, now, now));
+
+        // when // then
+        mockMvc.perform(get("/api/products/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.name").value("키보드"))
+                .andExpect(jsonPath("$.price").value(10000))
+                .andExpect(jsonPath("$.status").value("ON_SALE"));
+    }
+
+    @Test
+    @DisplayName("없거나 삭제된 상품이면 404와 PRODUCT_NOT_FOUND 코드를 응답한다")
+    void getProductNotFound() throws Exception {
+        // given
+        given(productService.getProduct(999L)).willThrow(new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
+
+        // when // then
+        mockMvc.perform(get("/api/products/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_001"))
+                .andExpect(jsonPath("$.message").value("상품을 찾을 수 없습니다."));
+    }
+
+    @Test
+    @DisplayName("id가 숫자가 아니면 400을 응답한다")
+    void getProductInvalidId() throws Exception {
+        // given // when // then
+        mockMvc.perform(get("/api/products/abc"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("COMMON_002"));
     }

@@ -1,5 +1,7 @@
 package com.payment.product.service;
 
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
 import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 import com.payment.product.dto.CreateProductRequest;
@@ -21,5 +23,13 @@ public class ProductService {
         Product saved = productRepository.save(product);
         // OSIV가 꺼져 있으므로 Entity -> DTO 변환은 트랜잭션 안에서 끝낸다.
         return ProductResponse.from(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public ProductResponse getProduct(Long id) {
+        Product product = productRepository.findById(id)
+                .filter(found -> !found.isDeleted())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
+        return ProductResponse.from(product);
     }
 }
