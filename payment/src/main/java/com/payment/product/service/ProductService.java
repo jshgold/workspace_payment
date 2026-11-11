@@ -53,6 +53,12 @@ public class ProductService {
         return ProductResponse.from(product);
     }
 
+    /** 소프트 삭제. 행은 남기고 deleted_at만 기록한다. 역시 더티 체킹으로 UPDATE가 나간다. */
+    @Transactional
+    public void delete(Long id) {
+        findActiveProduct(id).delete();
+    }
+
     private Product findActiveProduct(Long id) {
         return productRepository.findById(id)
                 .filter(found -> !found.isDeleted())

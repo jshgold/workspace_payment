@@ -4,8 +4,10 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -273,5 +275,26 @@ class ProductControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("COMMON_005"))
                 .andExpect(jsonPath("$.message").value("재고가 없는 상품은 판매중으로 바꿀 수 없습니다."));
+    }
+
+    @Test
+    @DisplayName("상품을 삭제하면 204를 응답하고 본문은 없다")
+    void deleteProduct() throws Exception {
+        // given // when // then
+        mockMvc.perform(delete("/api/products/1"))
+                .andExpect(status().isNoContent());
+        verify(productService).delete(1L);
+    }
+
+    @Test
+    @DisplayName("없거나 이미 삭제된 상품을 삭제하면 404를 응답한다")
+    void deleteNotFound() throws Exception {
+        // given
+        doThrow(new BusinessException(ErrorCode.PRODUCT_NOT_FOUND)).when(productService).delete(999L);
+
+        // when // then
+        mockMvc.perform(delete("/api/products/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_001"));
     }
 }

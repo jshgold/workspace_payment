@@ -1,7 +1,11 @@
 package com.payment.product.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
+import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
@@ -75,6 +79,44 @@ class ProductServiceIntegrationTest extends IntegrationTestSupport {
 
         // then
         assertThat(countUpdates(output.getAll())).isEqualTo(updatesBefore);
+    }
+
+    @Test
+    @DisplayName("삭제하면 조회·수정·재삭제는 404지만, DB 행은 남고 deleted_at이 기록된다 (소프트 삭제)")
+    void softDelete() {
+        // given
+        Long id = productService.create(new CreateProductRequest("키보드", 10_000L, 5)).id();
+
+        // when
+        productService.delete(id);
+
+        // then
+        assertThatThrownBy(() -> productService.getProduct(id))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
+        assertThatThrownBy(() -> productService.update(id, new UpdateProductRequest("마우스", 1_000L, 1)))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> productService.delete(id))
+                .isInstanceOf(BusinessException.class);
+
+        Product row = productRepository.findById(id).orElseThrow();
+        assertThat(row.getDeletedAt()).isNotNull();
+        assertThat(productRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("삭제한 상품과 같은 이름으로 다시 등록할 수 있다 (상품명 UNIQUE를 걸지 않기로 결정)")
+    void sameNameAfterDelete() {
+        // given
+        Long oldId = productService.create(new CreateProductRequest("키보드", 10_000L, 5)).id();
+        productService.delete(oldId);
+
+        // when
+        ProductResponse recreated = productService.create(new CreateProductRequest("키보드", 12_000L, 3));
+
+        // then
+        assertThat(recreated.id()).isNotEqualTo(oldId);
+        assertThat(productService.getProduct(recreated.id()).name()).isEqualTo("키보드");
     }
 
     /** format_sql 설정으로 SQL이 여러 줄로 출력되므로, 연속된 공백·개행을 한 칸으로 줄여 비교한다. */

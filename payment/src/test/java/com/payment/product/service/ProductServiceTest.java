@@ -191,4 +191,46 @@ class ProductServiceTest {
         assertThatThrownBy(() -> productService.changeStatus(1L, new UpdateProductStatusRequest(ProductStatus.ON_SALE)))
                 .isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    @DisplayName("상품을 삭제하면 삭제 상태가 되고, 실제 행을 지우는 delete 쿼리는 호출하지 않는다")
+    void delete() {
+        // given
+        Product product = Product.create("키보드", 10_000, 5);
+        given(productRepository.findById(1L)).willReturn(Optional.of(product));
+
+        // when
+        productService.delete(1L);
+
+        // then
+        assertThat(product.isDeleted()).isTrue();
+        verify(productRepository, never()).delete(any());
+        verify(productRepository, never()).deleteById(any());
+    }
+
+    @Test
+    @DisplayName("없는 상품을 삭제하면 PRODUCT_NOT_FOUND 예외가 난다")
+    void deleteNotFound() {
+        // given
+        given(productRepository.findById(anyLong())).willReturn(Optional.empty());
+
+        // when // then
+        assertThatThrownBy(() -> productService.delete(999L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("이미 삭제된 상품을 다시 삭제하면 PRODUCT_NOT_FOUND 예외가 난다")
+    void deleteAlreadyDeleted() {
+        // given
+        Product product = Product.create("키보드", 10_000, 5);
+        product.delete();
+        given(productRepository.findById(1L)).willReturn(Optional.of(product));
+
+        // when // then
+        assertThatThrownBy(() -> productService.delete(1L))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
+    }
 }
