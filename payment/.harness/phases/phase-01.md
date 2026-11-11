@@ -5,7 +5,7 @@
 
 ---
 
-- [ ] **1-1. Product 엔티티와 테이블**
+- [x] **1-1. Product 엔티티와 테이블**
   - Flyway `V1__create_product.sql` 작성 (이름, 가격, 재고, 상태, `deleted_at`, 생성·수정 시각)
   - 엔티티: 정적 팩토리 `create(...)`, 도메인 메서드 `update(...)`, `changeStatus(...)`, `delete()`
   - Guard Clause: 가격 > 0, 재고 >= 0
