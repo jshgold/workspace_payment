@@ -13,7 +13,7 @@
   - **완료 조건:** 엔티티 단위 테스트 통과, 애플리케이션 기동 시 `validate` 통과
   - **학습 포인트:** 3단계 제약조건(DTO 검증 / 도메인 Guard / DB 제약)이 각각 무엇을 막는지. 하나만 있으면 어떤 구멍이 생기나?
 
-- [ ] **1-2. 상품 등록 API**
+- [x] **1-2. 상품 등록 API**
   - `POST /api/products`
   - `CreateProductRequest`(record + Bean Validation) → Service → Controller
   - **완료 조건:** 서비스 단위 테스트 통과, 잘못된 요청(가격 0 등)에 400 응답
