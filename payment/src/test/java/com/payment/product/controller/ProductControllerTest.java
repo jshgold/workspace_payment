@@ -17,12 +17,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
+import com.payment.common.dto.PageResponse;
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
 import com.payment.common.exception.GlobalExceptionHandler;
 import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
+import com.payment.product.dto.ProductListResponse;
 import com.payment.product.dto.ProductResponse;
 import com.payment.product.dto.UpdateProductRequest;
 import com.payment.product.dto.UpdateProductStatusRequest;
@@ -30,6 +33,8 @@ import com.payment.product.service.ProductService;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.Pageable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -296,5 +301,59 @@ class ProductControllerTest {
         mockMvc.perform(delete("/api/products/999"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("PRODUCT_001"));
+    }
+
+    @Test
+    @DisplayName("목록 조회 파라미터(keyword, status, page, size)가 서비스로 전달되고 페이지 응답을 반환한다")
+    void search() throws Exception {
+        // given
+        given(productService.search(any(), any(), any(Pageable.class)))
+                .willReturn(new PageResponse<>(
+                        List.of(new ProductListResponse(1L, "키보드", 10_000L, 5, ProductStatus.ON_SALE)),
+                        1, 5, 6, 2));
+
+        // when
+        mockMvc.perform(get("/api/products")
+                        .param("keyword", "키보드")
+                        .param("status", "ON_SALE")
+                        .param("page", "1")
+                        .param("size", "5"))
+                // then
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].name").value("키보드"))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.totalElements").value(6))
+                .andExpect(jsonPath("$.totalPages").value(2));
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(productService).search(eq("키보드"), eq(ProductStatus.ON_SALE), pageable.capture());
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageNumber()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageSize()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("파라미터를 생략하면 기본 페이지(0)와 기본 크기(20)로 조회한다")
+    void searchDefaults() throws Exception {
+        // given
+        given(productService.search(any(), any(), any(Pageable.class)))
+                .willReturn(new PageResponse<>(List.of(), 0, 20, 0, 0));
+
+        // when
+        mockMvc.perform(get("/api/products")).andExpect(status().isOk());
+
+        // then
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(productService).search(eq(null), eq(null), pageable.capture());
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageNumber()).isEqualTo(0);
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageSize()).isEqualTo(20);
+    }
+
+    @Test
+    @DisplayName("status 값이 올바르지 않으면 400을 응답한다")
+    void searchInvalidStatus() throws Exception {
+        // given // when // then
+        mockMvc.perform(get("/api/products").param("status", "UNKNOWN"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("COMMON_002"));
     }
 }

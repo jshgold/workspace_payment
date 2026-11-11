@@ -8,14 +8,18 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import java.util.List;
 import java.util.Optional;
 
+import com.payment.common.dto.PageResponse;
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
 import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
+import com.payment.product.domain.ProductRepositoryCustom;
 import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
+import com.payment.product.dto.ProductListResponse;
 import com.payment.product.dto.ProductResponse;
 import com.payment.product.dto.UpdateProductRequest;
 import com.payment.product.dto.UpdateProductStatusRequest;
@@ -26,12 +30,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 @ExtendWith(MockitoExtension.class)
 class ProductServiceTest {
 
     @Mock
     ProductRepository productRepository;
+
+    @Mock
+    ProductRepositoryCustom productRepositoryCustom;
 
     @InjectMocks
     ProductService productService;
@@ -232,5 +242,27 @@ class ProductServiceTest {
         assertThatThrownBy(() -> productService.delete(1L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("목록 검색 결과를 페이지 응답으로 변환하고, 검색 조건을 Repository에 그대로 전달한다")
+    void search() {
+        // given
+        Pageable pageable = PageRequest.of(1, 2);
+        List<ProductListResponse> rows = List.of(
+                new ProductListResponse(3L, "키보드 A", 10_000L, 5, ProductStatus.ON_SALE),
+                new ProductListResponse(2L, "키보드 B", 12_000L, 3, ProductStatus.ON_SALE));
+        given(productRepositoryCustom.search("키보드", ProductStatus.ON_SALE, pageable))
+                .willReturn(new PageImpl<>(rows, pageable, 7));
+
+        // when
+        PageResponse<ProductListResponse> response = productService.search("키보드", ProductStatus.ON_SALE, pageable);
+
+        // then
+        assertThat(response.content()).hasSize(2);
+        assertThat(response.page()).isEqualTo(1);
+        assertThat(response.size()).isEqualTo(2);
+        assertThat(response.totalElements()).isEqualTo(7);
+        assertThat(response.totalPages()).isEqualTo(4);
     }
 }

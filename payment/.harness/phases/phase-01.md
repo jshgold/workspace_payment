@@ -35,7 +35,7 @@
   - **완료 조건:** 삭제 후 단건·목록 조회에서 제외됨
   - **학습 포인트:** 소프트 삭제 시 UNIQUE 제약(예: 상품명)과 충돌하는 문제. 이번 프로젝트에선 어떻게 할지 결정한다.
 
-- [ ] **1-6. 상품 목록 조회 (QueryDSL)**
+- [x] **1-6. 상품 목록 조회 (QueryDSL)**
   - `GET /api/products?keyword=&status=&page=&size=`
   - `ProductRepositoryCustomImpl`에서 동적 조건, 페이징, record DTO 프로젝션
   - `STOPPED`, 삭제된 상품 제외

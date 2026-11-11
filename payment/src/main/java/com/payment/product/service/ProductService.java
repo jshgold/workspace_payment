@@ -2,14 +2,19 @@ package com.payment.product.service;
 
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
+import com.payment.common.dto.PageResponse;
 import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
+import com.payment.product.domain.ProductRepositoryCustom;
+import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
+import com.payment.product.dto.ProductListResponse;
 import com.payment.product.dto.ProductResponse;
 import com.payment.product.dto.UpdateProductRequest;
 import com.payment.product.dto.UpdateProductStatusRequest;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final ProductRepositoryCustom productRepositoryCustom;
 
     @Transactional
     public ProductResponse create(CreateProductRequest request) {
@@ -30,6 +36,11 @@ public class ProductService {
     @Transactional(readOnly = true)
     public ProductResponse getProduct(Long id) {
         return ProductResponse.from(findActiveProduct(id));
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ProductListResponse> search(String keyword, ProductStatus status, Pageable pageable) {
+        return PageResponse.from(productRepositoryCustom.search(keyword, status, pageable));
     }
 
     /**
