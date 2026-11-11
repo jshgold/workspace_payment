@@ -24,7 +24,7 @@
   - 삭제된 상품은 `PRODUCT_NOT_FOUND`
   - **완료 조건:** 존재/미존재/삭제됨 세 경우 테스트
 
-- [ ] **1-4. 상품 수정 API**
+- [x] **1-4. 상품 수정 API**
   - `PUT /api/products/{id}` (이름, 가격, 재고)
   - `PATCH /api/products/{id}/status` (판매 상태 변경)
   - **완료 조건:** 수정 후 조회 시 반영 확인, 더티 체킹으로 UPDATE가 나가는지 SQL 로그로 확인

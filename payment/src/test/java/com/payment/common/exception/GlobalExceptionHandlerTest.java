@@ -102,7 +102,7 @@ class GlobalExceptionHandlerTest {
 
         @GetMapping("/stub/boom")
         void boom() {
-            throw new IllegalStateException("secret internal detail");
+            throw new NullPointerException("secret internal detail");
         }
 
         @PostMapping("/stub/validate")

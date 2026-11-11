@@ -60,6 +60,22 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(ErrorCode.RESOURCE_NOT_FOUND));
     }
 
+    /** 도메인 Guard가 던지는 값 위반. DTO 검증을 통과했더라도 도메인 규칙에 걸리면 400. */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException e) {
+        log.warn("Domain argument violation: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.INVALID_INPUT.getStatus())
+                .body(ErrorResponse.of(ErrorCode.INVALID_INPUT, e.getMessage()));
+    }
+
+    /** 도메인이 던지는 상태 위반(삭제된 상품 수정, 재고 0인데 판매중 전환 등). 409. */
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException e) {
+        log.warn("Domain state conflict: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.STATE_CONFLICT.getStatus())
+                .body(ErrorResponse.of(ErrorCode.STATE_CONFLICT, e.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception e) {
         log.error("Unexpected exception", e);

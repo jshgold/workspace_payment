@@ -2,11 +2,14 @@ package com.payment.product.controller;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -19,6 +22,8 @@ import com.payment.common.exception.GlobalExceptionHandler;
 import com.payment.product.domain.ProductStatus;
 import com.payment.product.dto.CreateProductRequest;
 import com.payment.product.dto.ProductResponse;
+import com.payment.product.dto.UpdateProductRequest;
+import com.payment.product.dto.UpdateProductStatusRequest;
 import com.payment.product.service.ProductService;
 
 import org.junit.jupiter.api.DisplayName;
@@ -175,5 +180,98 @@ class ProductControllerTest {
         mockMvc.perform(get("/api/products/abc"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("COMMON_002"));
+    }
+
+    @Test
+    @DisplayName("상품을 수정하면 200과 수정된 정보를 응답한다")
+    void update() throws Exception {
+        // given
+        LocalDateTime now = LocalDateTime.of(2026, 11, 11, 10, 0);
+        given(productService.update(eq(1L), any(UpdateProductRequest.class)))
+                .willReturn(new ProductResponse(1L, "마우스", 20_000, 7, ProductStatus.ON_SALE, now, now));
+
+        // when // then
+        mockMvc.perform(put("/api/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json("\"마우스\"", "20000", "7")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("마우스"))
+                .andExpect(jsonPath("$.price").value(20000))
+                .andExpect(jsonPath("$.stock").value(7));
+    }
+
+    @Test
+    @DisplayName("수정 요청의 가격이 0이면 400을 응답하고 서비스를 호출하지 않는다")
+    void updateInvalid() throws Exception {
+        // given // when // then
+        mockMvc.perform(put("/api/products/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json("\"마우스\"", "0", "7")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[*].field", hasItem("price")));
+        verify(productService, never()).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("없는 상품을 수정하면 404를 응답한다")
+    void updateNotFound() throws Exception {
+        // given
+        given(productService.update(eq(999L), any(UpdateProductRequest.class)))
+                .willThrow(new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
+
+        // when // then
+        mockMvc.perform(put("/api/products/999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json("\"마우스\"", "20000", "7")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PRODUCT_001"));
+    }
+
+    @Test
+    @DisplayName("판매 상태를 변경하면 200과 변경된 상태를 응답한다")
+    void changeStatus() throws Exception {
+        // given
+        LocalDateTime now = LocalDateTime.of(2026, 11, 11, 10, 0);
+        given(productService.changeStatus(eq(1L), any(UpdateProductStatusRequest.class)))
+                .willReturn(new ProductResponse(1L, "키보드", 10_000, 5, ProductStatus.STOPPED, now, now));
+
+        // when // then
+        mockMvc.perform(patch("/api/products/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"STOPPED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("STOPPED"));
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 상태 값이나 누락된 상태는 400을 응답한다")
+    void changeStatusInvalid() throws Exception {
+        // given // when // then
+        mockMvc.perform(patch("/api/products/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"UNKNOWN\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("COMMON_002"));
+        mockMvc.perform(patch("/api/products/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[*].field", hasItem("status")));
+    }
+
+    @Test
+    @DisplayName("재고와 모순되는 상태 변경이면 409와 사유 메시지를 응답한다")
+    void changeStatusConflict() throws Exception {
+        // given
+        given(productService.changeStatus(eq(1L), any(UpdateProductStatusRequest.class)))
+                .willThrow(new IllegalStateException("재고가 없는 상품은 판매중으로 바꿀 수 없습니다."));
+
+        // when // then
+        mockMvc.perform(patch("/api/products/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"ON_SALE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("COMMON_005"))
+                .andExpect(jsonPath("$.message").value("재고가 없는 상품은 판매중으로 바꿀 수 없습니다."));
     }
 }
