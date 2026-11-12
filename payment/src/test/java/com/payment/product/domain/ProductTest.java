@@ -209,6 +209,90 @@ class ProductTest {
     }
 
     @Nested
+    class DecreaseStock {
+
+        @Test
+        @DisplayName("재고보다 적게 차감하면 재고가 줄고 판매중 상태가 유지된다")
+        void decrease() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+
+            // when
+            product.decreaseStock(2);
+
+            // then
+            assertThat(product.getStock()).isEqualTo(3);
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.ON_SALE);
+        }
+
+        @Test
+        @DisplayName("재고를 전부 차감하면 재고가 0이 되고 품절(SOLD_OUT) 상태가 된다")
+        void decreaseToZero() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+
+            // when
+            product.decreaseStock(5);
+
+            // then
+            assertThat(product.getStock()).isZero();
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.SOLD_OUT);
+        }
+
+        @Test
+        @DisplayName("재고보다 많이 차감하면 예외가 나고 재고·상태는 바뀌지 않는다")
+        void decreaseFailsWhenInsufficient() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+
+            // when // then
+            assertThatThrownBy(() -> product.decreaseStock(6))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("재고");
+            assertThat(product.getStock()).isEqualTo(5);
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.ON_SALE);
+        }
+
+        @ParameterizedTest(name = "수량 {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("차감 수량이 0 이하이면 예외가 난다")
+        void decreaseFailsWhenQuantityNotPositive(int quantity) {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+
+            // when // then
+            assertThatThrownBy(() -> product.decreaseStock(quantity))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(product.getStock()).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("판매중지 상품은 재고를 차감할 수 없다")
+        void decreaseFailsWhenStopped() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+            product.changeStatus(ProductStatus.STOPPED);
+
+            // when // then
+            assertThatThrownBy(() -> product.decreaseStock(1))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(product.getStock()).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("삭제된 상품은 재고를 차감할 수 없다")
+        void decreaseFailsWhenDeleted() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+            product.delete();
+
+            // when // then
+            assertThatThrownBy(() -> product.decreaseStock(1))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    @Nested
     class Delete {
 
         @Test

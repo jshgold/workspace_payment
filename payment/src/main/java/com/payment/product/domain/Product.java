@@ -102,6 +102,27 @@ public class Product {
         this.status = newStatus;
     }
 
+    /**
+     * 재고를 차감한다. 재고가 0이 되면 SOLD_OUT으로 바뀐다.
+     * 이 메서드는 "읽은 시점의 stock" 기준으로 검증하므로, 동시 호출을 막는 것은 호출하는 쪽(락 전략)의 몫이다.
+     */
+    public void decreaseStock(int quantity) {
+        assertNotDeleted();
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("차감 수량은 0보다 커야 합니다.");
+        }
+        if (status == ProductStatus.STOPPED) {
+            throw new IllegalStateException("판매중지 상품은 재고를 차감할 수 없습니다.");
+        }
+        if (stock < quantity) {
+            throw new IllegalStateException("재고가 부족합니다. 현재 재고: " + stock + ", 요청 수량: " + quantity);
+        }
+        this.stock -= quantity;
+        if (this.stock == 0) {
+            this.status = ProductStatus.SOLD_OUT;
+        }
+    }
+
     /** 소프트 삭제. 행은 남기고 deleted_at만 기록한다. */
     public void delete() {
         assertNotDeleted();
