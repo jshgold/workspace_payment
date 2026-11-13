@@ -21,7 +21,7 @@
   - **완료 조건:** 동시성 테스트가 **실패하는 것**을 확인 (최종 재고가 0이 아님)
   - **학습 포인트:** Lost Update가 왜 생기는지 두 트랜잭션의 타임라인으로 그려본다. `synchronized`를 붙이면 왜 해결이 안 되나? (`@Transactional` 프록시와 커밋 시점)
 
-- [ ] **2-3. 조건부 Atomic Update**
+- [x] **2-3. 조건부 Atomic Update**
   - `UPDATE product SET stock = stock - :qty WHERE id = :id AND stock >= :qty`
   - 영향받은 행 수로 성공/실패 판단, `SOLD_OUT` 상태 처리 방법 결정
   - **완료 조건:** 공통 실험 조건 통과

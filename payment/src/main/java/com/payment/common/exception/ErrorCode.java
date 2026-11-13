@@ -17,7 +17,8 @@ public enum ErrorCode {
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "COMMON_999", "서버 내부 오류가 발생했습니다."),
 
     // 상품
-    PRODUCT_NOT_FOUND(HttpStatus.NOT_FOUND, "PRODUCT_001", "상품을 찾을 수 없습니다.");
+    PRODUCT_NOT_FOUND(HttpStatus.NOT_FOUND, "PRODUCT_001", "상품을 찾을 수 없습니다."),
+    STOCK_NOT_AVAILABLE(HttpStatus.CONFLICT, "PRODUCT_002", "재고가 부족하거나 판매할 수 없는 상품입니다.");
 
     private final HttpStatus status;
     private final String code;
