@@ -31,7 +31,7 @@ public abstract class StockConcurrencyTestSupport extends IntegrationTestSupport
 
     private static final Logger log = LoggerFactory.getLogger(StockConcurrencyTestSupport.class);
     private static final int THREAD_COUNT = 100;
-    private static final int QUANTITY = 1;
+    protected static final int QUANTITY = 1;
 
     @Autowired
     protected ProductRepository productRepository;
@@ -83,11 +83,11 @@ public abstract class StockConcurrencyTestSupport extends IntegrationTestSupport
         assertThat(result.success() * QUANTITY + found.getStock()).isEqualTo(50);
     }
 
-    private Long saveProduct(int stock) {
+    protected Long saveProduct(int stock) {
         return productRepository.save(Product.create("동시성 테스트 상품", 10_000, stock)).getId();
     }
 
-    private Result runConcurrently(Long productId) throws InterruptedException {
+    protected Result runConcurrently(Long productId) throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
         CountDownLatch ready = new CountDownLatch(THREAD_COUNT);
         CountDownLatch start = new CountDownLatch(1);
@@ -123,11 +123,11 @@ public abstract class StockConcurrencyTestSupport extends IntegrationTestSupport
         return new Result(success.get(), fail.get(), elapsedMs);
     }
 
-    private void log(Result result, Product found, String scenario) {
+    protected void log(Result result, Product found, String scenario) {
         log.info("[{}] {} → 성공 {}, 실패 {}, 최종 재고 {}, 소요 {}ms",
                 strategyName(), scenario, result.success(), result.fail(), found.getStock(), result.elapsedMs());
     }
 
-    private record Result(int success, int fail, long elapsedMs) {
+    protected record Result(int success, int fail, long elapsedMs) {
     }
 }
