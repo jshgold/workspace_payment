@@ -14,6 +14,7 @@ public enum ErrorCode {
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "COMMON_003", "요청한 리소스를 찾을 수 없습니다."),
     METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "COMMON_004", "지원하지 않는 HTTP 메서드입니다."),
     STATE_CONFLICT(HttpStatus.CONFLICT, "COMMON_005", "현재 상태에서는 처리할 수 없는 요청입니다."),
+    LOCK_ACQUISITION_FAILED(HttpStatus.SERVICE_UNAVAILABLE, "COMMON_006", "요청이 몰려 처리하지 못했습니다. 잠시 후 다시 시도해주세요."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "COMMON_999", "서버 내부 오류가 발생했습니다."),
 
     // 상품
