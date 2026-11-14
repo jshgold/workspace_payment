@@ -36,6 +36,9 @@ dependencies {
 
     // Redis 분산 락 (phase-02 2-7). 스타터 대신 코어만 쓰고 RedisLockExecutor가 클라이언트를 직접 관리한다.
     implementation("org.redisson:redisson:4.8.0")
+
+    // Redis 스핀락 (phase-02 2-7+). 스타터 없이 클라이언트만 쓰고 RedisSpinLockExecutor가 직접 관리한다. 버전은 Boot BOM이 관리.
+    implementation("io.lettuce:lettuce-core")
     runtimeOnly("com.mysql:mysql-connector-j")
 
     // QueryDSL
