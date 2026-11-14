@@ -33,6 +33,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-flyway")
     implementation("org.flywaydb:flyway-mysql")
+
+    // Redis 분산 락 (phase-02 2-7). 스타터 대신 코어만 쓰고 RedisLockExecutor가 클라이언트를 직접 관리한다.
+    implementation("org.redisson:redisson:4.8.0")
     runtimeOnly("com.mysql:mysql-connector-j")
 
     // QueryDSL

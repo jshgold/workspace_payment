@@ -43,11 +43,17 @@
   - **완료 조건:** 공통 실험 조건 통과
   - **학습 포인트:** 락을 잡은 커넥션과 비즈니스 트랜잭션 커넥션이 다르면 무슨 일이 생기나? 커넥션 풀 고갈 위험. (ARCHITECTURE 4번 `REQUIRES_NEW` 금지와 연결)
 
-- [ ] **2-7. Redis 분산 락 (Redisson)**
+- [x] **2-7. Redis 분산 락 (Redisson)**
   - docker-compose와 Testcontainers에 Redis 추가, Redisson 설정
   - `락 획득 → 트랜잭션 시작 → 로직 → 커밋 → 락 해제` 순서 보장
   - **완료 조건:** 공통 실험 조건 통과
   - **학습 포인트:** 커밋 전에 락을 풀면 무슨 일이 생기나? `waitTime`과 `leaseTime`은 각각 무엇이고, 로직이 `leaseTime`보다 오래 걸리면?
+
+- [ ] **2-7+. Redis 스핀락 (사용자 요청으로 추가한 선택 과제)**
+  - Redis `SET key token NX PX leaseTime` + 재시도 루프(sleep)로 직접 구현. Redisson 없이 Lettuce 수준의 명령만 사용
+  - 소유자 토큰 확인 후 해제(Lua 스크립트), 락 획득 → 트랜잭션 → 커밋 → 락 해제 순서는 Facade로 보장
+  - **완료 조건:** 공통 실험 조건 통과, Redis 요청 수(폴링 횟수)와 소요 시간을 Redisson과 비교해 기록
+  - **학습 포인트:** 스핀락은 왜 폴링 부하가 생기나? Redisson은 Pub/Sub으로 이를 어떻게 줄이나? 소유자 토큰 없이 해제하면 무슨 일이 생기나?
 
 - [ ] **2-8. 비교 정리 (사용자가 직접 작성)**
   - `docs/lock-comparison.md`에 전략별 성공 건수, 최종 재고, 소요 시간, 장단점 표 작성

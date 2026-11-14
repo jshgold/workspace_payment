@@ -8,6 +8,11 @@ spring:
       hibernate:
         format_sql: true
 
+app:
+  redis:
+    # Redisson 분산 락용. RedisLockExecutor가 첫 사용 시점에 연결한다. (Redis를 안 쓰는 기능은 영향 없음)
+    address: redis://localhost:6379
+
 logging:
   level:
     # 실행되는 SQL
