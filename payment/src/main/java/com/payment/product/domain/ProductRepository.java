@@ -48,4 +48,22 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
                and p.stock >= :quantity
             """)
     int decreaseStockIfAvailable(@Param("id") Long id, @Param("quantity") int quantity);
+
+    /**
+     * [락 없음 전략 전용] 읽은 값으로 계산한 재고·상태를 조건 없이 덮어쓴다. (blind write)
+     * <ul>
+     *   <li>벌크 UPDATE는 Hibernate의 {@code @Version} 검사를 거치지 않으므로, 락 없음 전략에서
+     *       Lost Update를 그대로 재현하는 데 쓴다.</li>
+     *   <li>version을 올리지 않고, WHERE에 stock 조건도 없다. 운영 코드에서 쓰면 안 된다.</li>
+     * </ul>
+     */
+    @Modifying
+    @Query("""
+            update Product p
+               set p.stock = :stock,
+                   p.status = :status,
+                   p.updatedAt = current_timestamp
+             where p.id = :id
+            """)
+    int overwriteStock(@Param("id") Long id, @Param("stock") int stock, @Param("status") ProductStatus status);
 }
