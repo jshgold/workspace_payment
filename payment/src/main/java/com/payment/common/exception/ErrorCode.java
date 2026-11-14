@@ -18,7 +18,8 @@ public enum ErrorCode {
 
     // 상품
     PRODUCT_NOT_FOUND(HttpStatus.NOT_FOUND, "PRODUCT_001", "상품을 찾을 수 없습니다."),
-    STOCK_NOT_AVAILABLE(HttpStatus.CONFLICT, "PRODUCT_002", "재고가 부족하거나 판매할 수 없는 상품입니다.");
+    STOCK_NOT_AVAILABLE(HttpStatus.CONFLICT, "PRODUCT_002", "재고가 부족하거나 판매할 수 없는 상품입니다."),
+    STOCK_CONFLICT_RETRY_EXCEEDED(HttpStatus.CONFLICT, "PRODUCT_003", "동시 요청이 많아 재고 차감에 실패했습니다. 잠시 후 다시 시도해주세요.");
 
     private final HttpStatus status;
     private final String code;

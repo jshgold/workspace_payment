@@ -10,6 +10,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -41,6 +42,11 @@ public class Product {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private ProductStatus status;
+
+    /** 낙관적 락용 버전. UPDATE 시 WHERE version = ? 로 충돌을 감지하고 매번 1씩 증가한다. */
+    @Version
+    @Column(nullable = false)
+    private Long version;
 
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
