@@ -10,7 +10,7 @@ phase-02의 락이 "DB 안의 동시성"이었다면, 여기서는 "외부 시�
 
 ---
 
-- [ ] **3-1. Order 엔티티와 주문 생성 API**
+- [x] **3-1. Order 엔티티와 주문 생성 API**
   - Flyway로 `orders` 테이블, `Order.create(...)`: 상태 `PENDING`, 금액은 서버에서 계산
   - `POST /api/orders` (`memberId`, `productId`, `quantity`)
   - **완료 조건:** 판매 중이 아닌 상품, 재고 부족 시 주문 실패 테스트
