@@ -13,15 +13,20 @@ import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * [비관적 락 구현] 주문과 상품 행을 {@code SELECT ... FOR UPDATE}로 잠그고 도메인 메서드로 상태를 바꾼다.
+ * [비관적 락 구현] phase-02 결론(비관적 락 기본)에 따라 {@code PaymentFacade}에 주입되는 기본 구현체다. ({@code @Primary})
+ * 다른 구현체는 테스트에서 직접 주입해 같은 시나리오로 비교한다.
+ * <p>
+ * 주문과 상품 행을 {@code SELECT ... FOR UPDATE}로 잠그고 도메인 메서드로 상태를 바꾼다.
  * <p>
  * 잠그는 순서는 항상 <b>orders → product</b>다. 다른 경로(결제 취소 등)도 같은 순서를 지켜야 데드락이 나지 않는다.
  * 재고 행 락은 트랜잭션 맨 끝에서 잡아 락을 쥐는 시간을 줄인다.
  */
+@Primary
 @Service
 @RequiredArgsConstructor
 public class PessimisticLockPaymentStateService implements PaymentStateService {

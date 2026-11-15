@@ -1,0 +1,99 @@
+package com.payment.payment.service;
+
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
+import com.payment.order.domain.Order;
+import com.payment.order.domain.OrderRepository;
+import com.payment.order.domain.OrderStatus;
+import com.payment.payment.domain.Payment;
+import com.payment.payment.domain.PaymentRepository;
+import com.payment.payment.domain.PgApproveResult;
+import com.payment.payment.dto.PaymentResponse;
+import com.payment.product.domain.ProductRepository;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * [원자적 쿼리 구현] 조건부 UPDATE 한 문장이 관문이 된다. 행을 읽어서 판단하지 않고 DB가 확인과 변경을 한 번에 한다.
+ * <ul>
+ *   <li>선점: {@code UPDATE orders SET status='PAYING' WHERE id=? AND status='PENDING'} — 0행이면 선점 실패</li>
+ *   <li>반영: 같은 방식으로 PAYING → PAID를 먼저 통과한 요청만 Payment INSERT와 재고 차감으로 진행한다.
+ *       중복 메시지는 0행이라 INSERT까지 가지 않으므로 UNIQUE 위반 예외로 걸러지지 않는다.</li>
+ *   <li>재고 차감은 트랜잭션 맨 끝에 둔다. UPDATE가 잡은 재고 행 락은 커밋까지 유지되므로 보유 시간을 줄이기 위해서다.</li>
+ * </ul>
+ * 비관적 락 구현({@link PessimisticLockPaymentStateService})과 달리 상태 규칙이 SQL에 한 번 더 들어간다.
+ */
+@Service
+@RequiredArgsConstructor
+public class AtomicUpdatePaymentStateService implements PaymentStateService {
+
+    private final OrderRepository orderRepository;
+    private final ProductRepository productRepository;
+    private final PaymentRepository paymentRepository;
+
+    @Override
+    @Transactional
+    public PaymentTarget startPaying(Long orderId) {
+        int updated = orderRepository.transitionStatus(orderId, OrderStatus.PENDING, OrderStatus.PAYING);
+        if (updated == 0) {
+            throw rejection(orderId, "결제를 시작할 수 없는 주문 상태입니다.");
+        }
+        Order order = findOrder(orderId);
+        return new PaymentTarget(order.getId(), order.getTotalPrice());
+    }
+
+    @Override
+    @Transactional
+    public PaymentResponse complete(Long orderId, PgApproveResult approveResult) {
+        int updated = orderRepository.transitionStatus(orderId, OrderStatus.PAYING, OrderStatus.PAID);
+        if (updated == 0) {
+            return alreadyCompletedOrReject(orderId);
+        }
+
+        Order order = findOrder(orderId);
+        Payment payment = paymentRepository.save(
+                Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
+        // 아래 벌크 UPDATE가 영속성 컨텍스트를 비우므로, 응답은 그 전에 만든다.
+        PaymentResponse response = PaymentResponse.of(order, payment);
+
+        int decreased = productRepository.decreaseStockIfAvailable(order.getProductId(), order.getQuantity());
+        if (decreased == 0) {
+            // 예외로 트랜잭션 전체를 롤백한다. 앞에서 바꾼 주문 상태와 저장한 결제 기록도 함께 되돌아간다.
+            throw new BusinessException(ErrorCode.STOCK_NOT_AVAILABLE);
+        }
+        return response;
+    }
+
+    @Override
+    @Transactional
+    public void revertToPending(Long orderId) {
+        int updated = orderRepository.transitionStatus(orderId, OrderStatus.PAYING, OrderStatus.PENDING);
+        if (updated == 0) {
+            throw rejection(orderId, "결제 대기로 되돌릴 수 없는 주문 상태입니다.");
+        }
+    }
+
+    /** 이미 PAID면 중복 메시지이므로 예외 없이 기존 결과를 돌려주고, 그 외에는 상태 위반으로 거절한다. */
+    private PaymentResponse alreadyCompletedOrReject(Long orderId) {
+        Order order = findOrder(orderId);
+        if (order.getStatus() != OrderStatus.PAID) {
+            throw new IllegalStateException("결제 완료 처리할 수 없는 주문 상태입니다. 현재 상태: " + order.getStatus());
+        }
+        Payment existing = paymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new IllegalStateException("PAID 주문에 결제 기록이 없습니다. orderId=" + orderId));
+        return PaymentResponse.of(order, existing);
+    }
+
+    /** 0행의 원인을 실패 경로에서만 구분한다. (없는 주문 vs 상태가 맞지 않음) */
+    private RuntimeException rejection(Long orderId, String message) {
+        Order order = findOrder(orderId);
+        return new IllegalStateException(message + " 현재 상태: " + order.getStatus());
+    }
+
+    private Order findOrder(Long orderId) {
+        return orderRepository.findById(orderId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_NOT_FOUND));
+    }
+}

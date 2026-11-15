@@ -124,9 +124,10 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         setStock(product, 1);
 
         // when // then
+        // 구현체마다 예외 타입은 다르다. (비관적 락: 도메인의 IllegalStateException, 원자적 쿼리: BusinessException)
         assertThatThrownBy(() -> paymentFacade.approve(order.getId()))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("재고가 부족합니다");
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("재고가 부족");
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
         assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
