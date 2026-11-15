@@ -1,0 +1,119 @@
+package com.payment.payment.infrastructure;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentClient;
+import com.payment.payment.domain.PaymentDeclinedException;
+import com.payment.payment.domain.PaymentTimeoutException;
+import com.payment.payment.domain.PgApproveRequest;
+import com.payment.payment.domain.PgApproveResult;
+
+import org.springframework.stereotype.Component;
+
+/**
+ * 실제 PG가 정해지기 전까지 쓰는 가짜 PG. 시나리오를 코드로 조작할 수 있다.
+ * <ul>
+ *   <li>{@link #willApprove()} / {@link #willDecline(String)} / {@link #willTimeout()}: 다음 승인 호출의 결과</li>
+ *   <li>{@link #delay(Duration)}: 응답 지연. 승인·취소 모두에 적용된다. (DB 커넥션 점유 실험용)</li>
+ *   <li>{@link #willFailCancel()}: 취소 호출이 실패하는 시나리오 (보상 작업 실패)</li>
+ *   <li>{@link #approveCallCount()}: PG가 실제로 몇 번 호출됐는지. 멱등성 검증(3-4)의 핵심 증거</li>
+ * </ul>
+ * 동시성 테스트에서 여러 스레드가 호출하므로 상태는 스레드 안전하게 관리한다.
+ * 시나리오 설정은 테스트 시작 전에 한 번 하고, 테스트 사이에는 {@link #reset()}으로 초기화한다.
+ */
+@Component
+public class FakePaymentClient implements PaymentClient {
+
+    private enum Scenario { APPROVE, DECLINE, TIMEOUT }
+
+    private volatile Scenario scenario = Scenario.APPROVE;
+    private volatile String declineReason = "한도 초과";
+    private volatile Duration delay = Duration.ZERO;
+    private volatile boolean cancelFails = false;
+
+    private final AtomicInteger approveCalls = new AtomicInteger();
+    private final AtomicInteger cancelCalls = new AtomicInteger();
+    private final List<String> canceledTransactionIds = new CopyOnWriteArrayList<>();
+
+    public void willApprove() {
+        this.scenario = Scenario.APPROVE;
+    }
+
+    public void willDecline(String reason) {
+        this.declineReason = reason;
+        this.scenario = Scenario.DECLINE;
+    }
+
+    /** 지연 시간만큼 기다린 뒤 타임아웃을 던진다. 실제 PG의 "응답 대기 후 포기"를 흉내 낸다. */
+    public void willTimeout() {
+        this.scenario = Scenario.TIMEOUT;
+    }
+
+    public void delay(Duration delay) {
+        this.delay = delay;
+    }
+
+    public void willFailCancel() {
+        this.cancelFails = true;
+    }
+
+    public int approveCallCount() {
+        return approveCalls.get();
+    }
+
+    public int cancelCallCount() {
+        return cancelCalls.get();
+    }
+
+    public List<String> canceledTransactionIds() {
+        return List.copyOf(canceledTransactionIds);
+    }
+
+    public void reset() {
+        this.scenario = Scenario.APPROVE;
+        this.declineReason = "한도 초과";
+        this.delay = Duration.ZERO;
+        this.cancelFails = false;
+        approveCalls.set(0);
+        cancelCalls.set(0);
+        canceledTransactionIds.clear();
+    }
+
+    @Override
+    public PgApproveResult approve(PgApproveRequest request) {
+        approveCalls.incrementAndGet();
+        simulateLatency();
+        return switch (scenario) {
+            case APPROVE -> new PgApproveResult("fake-" + UUID.randomUUID(), request.amount());
+            case DECLINE -> throw new PaymentDeclinedException(declineReason);
+            case TIMEOUT -> throw new PaymentTimeoutException();
+        };
+    }
+
+    @Override
+    public void cancel(String pgTransactionId, String reason) {
+        cancelCalls.incrementAndGet();
+        simulateLatency();
+        if (cancelFails) {
+            throw new PaymentCancelFailedException(pgTransactionId);
+        }
+        canceledTransactionIds.add(pgTransactionId);
+    }
+
+    private void simulateLatency() {
+        if (delay.isZero()) {
+            return;
+        }
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PaymentTimeoutException();
+        }
+    }
+}
