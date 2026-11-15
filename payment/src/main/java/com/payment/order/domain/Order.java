@@ -94,4 +94,31 @@ public class Order {
                 .status(OrderStatus.PENDING)
                 .build();
     }
+
+    /**
+     * PG 승인 호출 전에 주문을 선점한다. PENDING일 때만 가능하다.
+     * 동시에 들어온 두 번째 요청은 호출하는 쪽의 락 때문에 이 시점에 이미 PAYING을 보고 거절된다.
+     */
+    public void startPaying() {
+        assertStatus(OrderStatus.PENDING, "결제를 시작할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.PAYING;
+    }
+
+    /** PG 승인 결과를 반영해 결제 완료로 바꾼다. PAYING일 때만 가능하다. */
+    public void markPaid() {
+        assertStatus(OrderStatus.PAYING, "결제 완료 처리할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.PAID;
+    }
+
+    /** 돈이 빠져나가지 않은 것이 확실할 때(PG 거절, 승인 취소 완료) 선점을 풀어 재시도를 허용한다. */
+    public void revertToPending() {
+        assertStatus(OrderStatus.PAYING, "결제 대기로 되돌릴 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.PENDING;
+    }
+
+    private void assertStatus(OrderStatus expected, String message) {
+        if (this.status != expected) {
+            throw new IllegalStateException(message + " 현재 상태: " + this.status);
+        }
+    }
 }

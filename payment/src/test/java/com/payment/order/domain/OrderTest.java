@@ -107,4 +107,61 @@ class OrderTest {
         assertThatThrownBy(() -> Order.create(1L, product, 0)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Order.create(null, product, 1)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("PENDING 주문은 결제를 시작하면 PAYING이 되고, PAYING이 PAID로 바뀐다")
+    void paymentTransitions() {
+        // given
+        Order order = Order.create(1L, product(5), 1);
+
+        // when
+        order.startPaying();
+        OrderStatus afterStart = order.getStatus();
+        order.markPaid();
+
+        // then
+        assertThat(afterStart).isEqualTo(OrderStatus.PAYING);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAID);
+    }
+
+    @Test
+    @DisplayName("이미 PAYING이거나 PAID인 주문은 결제를 다시 시작할 수 없다")
+    void startPayingFailsWhenNotPending() {
+        // given
+        Order paying = Order.create(1L, product(5), 1);
+        paying.startPaying();
+        Order paid = Order.create(1L, product(5), 1);
+        paid.startPaying();
+        paid.markPaid();
+
+        // when // then
+        assertThatThrownBy(paying::startPaying).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(paid::startPaying).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("PAYING이 아닌 주문은 결제 완료 처리하거나 PENDING으로 되돌릴 수 없다")
+    void markPaidAndRevertFailWhenNotPaying() {
+        // given
+        Order pending = Order.create(1L, product(5), 1);
+
+        // when // then
+        assertThatThrownBy(pending::markPaid).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(pending::revertToPending).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("PAYING 주문은 PENDING으로 되돌려 다시 결제를 시작할 수 있다")
+    void revertToPending() {
+        // given
+        Order order = Order.create(1L, product(5), 1);
+        order.startPaying();
+
+        // when
+        order.revertToPending();
+        order.startPaying();
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYING);
+    }
 }

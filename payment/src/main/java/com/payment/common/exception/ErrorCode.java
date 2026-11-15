@@ -22,7 +22,11 @@ public enum ErrorCode {
     STOCK_NOT_AVAILABLE(HttpStatus.CONFLICT, "PRODUCT_002", "재고가 부족하거나 판매할 수 없는 상품입니다."),
     STOCK_CONFLICT_RETRY_EXCEEDED(HttpStatus.CONFLICT, "PRODUCT_003", "동시 요청이 많아 재고 차감에 실패했습니다. 잠시 후 다시 시도해주세요."),
 
+    // 주문
+    ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER_001", "주문을 찾을 수 없습니다."),
+
     // 결제 (PG)
+    PAYMENT_AMOUNT_MISMATCH(HttpStatus.CONFLICT, "PAYMENT_004", "결제 승인 금액이 주문 금액과 일치하지 않습니다."),
     PAYMENT_DECLINED(HttpStatus.PAYMENT_REQUIRED, "PAYMENT_001", "결제가 거절되었습니다."),
     PAYMENT_TIMEOUT(HttpStatus.GATEWAY_TIMEOUT, "PAYMENT_002", "결제사 응답이 지연되어 결제 결과를 확인할 수 없습니다."),
     PAYMENT_CANCEL_FAILED(HttpStatus.BAD_GATEWAY, "PAYMENT_003", "결제 취소에 실패했습니다.");
