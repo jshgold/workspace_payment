@@ -3,13 +3,16 @@ package com.payment.common.exception;
 import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -35,10 +38,27 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(ErrorCode.INVALID_INPUT, violations));
     }
 
+    /** 헤더 파라미터의 Bean Validation 위반(빈 Idempotency-Key 등). */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ErrorResponse> handleMethodValidation(HandlerMethodValidationException e) {
+        log.warn("Method validation failed: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.INVALID_INPUT.getStatus())
+                .body(ErrorResponse.of(ErrorCode.INVALID_INPUT));
+    }
+
+    /** 락 대기 시간 초과나 데드락. 이 요청은 아무것도 선점하지 못했으므로 같은 키로 재시도해도 안전하다. */
+    @ExceptionHandler(PessimisticLockingFailureException.class)
+    public ResponseEntity<ErrorResponse> handleLockFailure(PessimisticLockingFailureException e) {
+        log.warn("Lock acquisition failed: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.LOCK_ACQUISITION_FAILED.getStatus())
+                .body(ErrorResponse.of(ErrorCode.LOCK_ACQUISITION_FAILED));
+    }
+
     @ExceptionHandler({
             HttpMessageNotReadableException.class,
             MethodArgumentTypeMismatchException.class,
-            MissingServletRequestParameterException.class
+            MissingServletRequestParameterException.class,
+            MissingRequestHeaderException.class
     })
     public ResponseEntity<ErrorResponse> handleBadRequest(Exception e) {
         log.warn("Bad request: {}", e.getMessage());
