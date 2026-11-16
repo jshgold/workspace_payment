@@ -1,0 +1,166 @@
+#!/bin/sh
+# post-commit 훅: 방금 커밋에서 변경된 "테스트 파일 + 요구사항"만 임시 폴더로 복사해
+# agy(Antigravity)가 "테스트가 요구사항을 실제로 검증하는가"를 리뷰한다.
+#
+# - 구현 코드는 일부러 제외한다 (구현에 맞춰 테스트를 합리화하는 것을 막기 위한 blind review)
+# - 커밋을 막지 않는다 (항상 exit 0). 리뷰는 백그라운드에서 돌고 결과는 파일로 남는다.
+# - 결과: payment/docs/code-review/<날짜시간>_<해시>.md (이 커밋에는 포함되지 않는다)
+# - git 저장소 루트는 payment/ 의 한 단계 위다. 그래서 경로를 PROJECT_REL 기준으로 다룬다.
+#
+# 테스트용 환경변수
+#   REVIEW_DIR=<경로>        결과 저장 위치 변경
+#   REVIEW_FOREGROUND=1      백그라운드 대신 동기 실행
+
+# IntelliJ 등 GUI에서 커밋하면 PATH가 비어 있을 수 있어 agy 설치 위치를 뒤에 덧붙인다.
+PATH="$PATH:$HOME/.local/bin"
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$ROOT" || exit 0
+
+PROJECT_REL="payment"
+PROJECT="$ROOT/$PROJECT_REL"
+REVIEW_DIR="${REVIEW_DIR:-$PROJECT/docs/code-review}"
+MAX_BYTES=300000
+
+command -v agy >/dev/null 2>&1 || {
+  echo "[code-review] agy 명령을 찾을 수 없어 리뷰를 건너뜁니다."
+  exit 0
+}
+
+HASH=$(git rev-parse --short HEAD)
+MSG=$(git log -1 --pretty=%s)
+
+# 1. 이번 커밋에서 추가/수정된 테스트 파일 (시크릿 성격의 파일명은 제외)
+CHANGED_TESTS=$(git diff-tree --root --no-commit-id --name-only -r --diff-filter=AM HEAD -- "$PROJECT_REL/src/test" \
+  | grep '\.java$' \
+  | grep -viE '(\.env|secret|credential|\.pem)')
+
+if [ -z "$CHANGED_TESTS" ]; then
+  echo "[code-review] 변경된 테스트 파일이 없어 리뷰를 건너뜁니다."
+  exit 0
+fi
+
+# 2. 현재 phase 파일 경로는 CLAUDE.md에서 읽는다 (사용자가 CLAUDE.md의 phase를 바꾸면 따라간다)
+PHASE_FILE=$(grep -o '\.harness/phases/phase-[0-9][0-9]*\.md' "$PROJECT/CLAUDE.md" 2>/dev/null | head -n 1)
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/code-review.XXXXXX") || exit 0
+
+# 3. 임시 폴더로 복사: 테스트는 커밋된 내용(HEAD), 요구사항은 현재 작업 트리
+mkdir -p "$TMP/tests" "$TMP/requirements"
+
+echo "$CHANGED_TESTS" | while IFS= read -r f; do
+  rel="${f#$PROJECT_REL/}"
+  mkdir -p "$TMP/tests/$(dirname "$rel")"
+  git show "HEAD:$f" > "$TMP/tests/$rel" 2>/dev/null
+done
+
+for rel in .harness/intent.md "$PHASE_FILE" .claude/rules/test-convention.md; do
+  [ -n "$rel" ] || continue
+  if [ -f "$PROJECT/$rel" ]; then
+    mkdir -p "$TMP/requirements/$(dirname "$rel")"
+    cp "$PROJECT/$rel" "$TMP/requirements/$rel"
+  fi
+done
+
+# 4. 요구사항 + 테스트를 하나의 입력 파일로 묶는다 (코드 펜스 충돌을 피하려고 ~~~~ 사용)
+BUNDLE="$TMP/bundle.md"
+{
+  echo "## [요구사항 문서]"
+  find "$TMP/requirements" -type f | sort | while IFS= read -r p; do
+    echo
+    echo "### ${p#$TMP/requirements/}"
+    echo "~~~~markdown"
+    cat "$p"
+    echo "~~~~"
+  done
+  echo
+  echo "## [이번 커밋에서 변경된 테스트 파일]"
+  find "$TMP/tests" -type f | sort | while IFS= read -r p; do
+    echo
+    echo "### ${p#$TMP/tests/}"
+    echo "~~~~java"
+    cat "$p"
+    echo "~~~~"
+  done
+} > "$BUNDLE"
+
+SIZE=$(wc -c < "$BUNDLE" | tr -d ' ')
+if [ "$SIZE" -gt "$MAX_BYTES" ]; then
+  echo "[code-review] 입력이 ${SIZE}바이트로 너무 커서 리뷰를 건너뜁니다. (한도 ${MAX_BYTES})"
+  rm -rf "$TMP"
+  exit 0
+fi
+
+# 5. 프롬프트 = 고정 지시문 + 커밋 정보 + 입력 묶음
+cat > "$TMP/prompt.md" <<'PROMPT_EOF'
+당신은 시니어 Java/Spring 백엔드 엔지니어이자 테스트 리뷰어입니다.
+아래는 "요구사항 문서"와 "이번 커밋에서 변경된 테스트 코드"입니다.
+
+[전제]
+- 구현 코드는 의도적으로 제외했습니다. 구현을 추측해서 평가하지 마세요.
+- 평가 대상은 구현이 아니라 "테스트가 요구사항을 실제로 검증하는가"입니다.
+- 스타일, 네이밍, 포매팅 지적은 하지 마세요.
+- 변경된 테스트만 제공됩니다. 변경되지 않은 다른 테스트가 이미 검증하고 있을 수 있으므로,
+  "누락"은 반드시 "이번 변경분 기준"이라고 표기하세요.
+
+[할 일]
+1. 요구사항 <-> 테스트 매핑표: 요구사항 / 검증하는 테스트 메서드 / 판정(충분, 부분, 없음)
+2. 이번 변경과 관련된 요구사항 중 검증하는 테스트가 없는 항목
+3. assertion이 약해서 버그를 놓칠 테스트
+   (예: 성공 건수만 보고 최종 재고나 상태는 확인하지 않음, 예외 타입만 보고 롤백 여부는 확인하지 않음)
+4. 동시성 테스트라면 다음을 확인
+   - 락이 없는 구현에서도 통과해 버리는 테스트인가 (충돌을 유발하지 못하는 스레드 수, 재고 수)
+   - flaky 가능성 (고정 sleep, CountDownLatch 미사용, 타이밍 의존)
+5. 추가를 권하는 경계 케이스
+   (재고 0, 수량 초과, 중복 요청, 취소 후 재취소, 승인 금액 불일치, PG 거절/시간초과 등)
+
+[출력 형식]
+- 한국어 마크다운
+- 지적마다 "파일/메서드 - 문제 - 보강 방법(테스트 코드 스케치)" 순서로 작성
+- 확신이 없으면 "추측"이라고 표시
+- 문제가 없는 항목은 없다고 짧게 쓰세요
+
+PROMPT_EOF
+{
+  echo "[커밋 정보] $HASH $MSG"
+  echo
+  cat "$BUNDLE"
+} >> "$TMP/prompt.md"
+
+# 6. agy 실행. 실패해도 커밋 흐름에는 영향이 없다.
+run_review() {
+  mkdir -p "$REVIEW_DIR"
+  REPORT="$REVIEW_DIR/$(date +%Y%m%d-%H%M%S)_${HASH}.md"
+
+  if agy -p "$(cat "$TMP/prompt.md")" > "$TMP/report.md" 2> "$TMP/agy.err" && [ -s "$TMP/report.md" ]; then
+    {
+      echo "# 테스트 리뷰: $MSG ($HASH)"
+      echo
+      echo "리뷰 대상 테스트(구현 코드는 제외):"
+      echo "$CHANGED_TESTS" | sed 's/^/- /'
+      echo
+      cat "$TMP/report.md"
+    } > "$REPORT"
+    echo "[code-review] 완료: $REPORT"
+    command -v osascript >/dev/null 2>&1 \
+      && osascript -e "display notification \"테스트 리뷰 완료 ($HASH)\" with title \"code-review\"" >/dev/null 2>&1
+  else
+    {
+      echo "--- $(date) / $HASH"
+      cat "$TMP/agy.err"
+    } >> "$REVIEW_DIR/.review-error.log"
+    echo "[code-review] agy 실행 실패. $REVIEW_DIR/.review-error.log 를 확인하세요."
+  fi
+
+  [ -n "$TMP" ] && rm -rf "$TMP"
+}
+
+echo "[code-review] '$MSG' 커밋의 테스트 ${SIZE}바이트를 agy로 리뷰합니다. (백그라운드)"
+
+if [ -n "$REVIEW_FOREGROUND" ]; then
+  run_review
+else
+  ( trap '' HUP; run_review ) >/dev/null 2>&1 &
+fi
+
+exit 0
