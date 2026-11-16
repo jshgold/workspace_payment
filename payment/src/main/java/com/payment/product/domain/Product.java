@@ -129,6 +129,21 @@ public class Product {
         }
     }
 
+    /**
+     * 결제 취소로 재고를 복구한다. 품절(SOLD_OUT)이었다면 판매중(ON_SALE)으로 돌아간다.
+     * 삭제됐거나 판매중지된 상품도 복구한다. 이미 환불된 주문의 재고를 되돌리는 일이라 상품 상태 때문에 막으면 안 되고,
+     * 판매중지(STOPPED) 상태는 그대로 유지한다. (decreaseStock과 동일하게 동시성 제어는 호출하는 쪽의 몫이다.)
+     */
+    public void increaseStock(int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("복구 수량은 0보다 커야 합니다.");
+        }
+        this.stock = Math.addExact(this.stock, quantity);
+        if (this.status == ProductStatus.SOLD_OUT) {
+            this.status = ProductStatus.ON_SALE;
+        }
+    }
+
     /** 소프트 삭제. 행은 남기고 deleted_at만 기록한다. */
     public void delete() {
         assertNotDeleted();

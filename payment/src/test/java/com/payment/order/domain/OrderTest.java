@@ -151,6 +151,72 @@ class OrderTest {
     }
 
     @Test
+    @DisplayName("PAID 주문은 취소를 시작하면 CANCELING이 되고, CANCELING이 CANCELED로 바뀐다")
+    void cancelTransitions() {
+        // given
+        Order order = paidOrder();
+
+        // when
+        order.startCanceling();
+        OrderStatus afterStart = order.getStatus();
+        order.markCanceled();
+
+        // then
+        assertThat(afterStart).isEqualTo(OrderStatus.CANCELING);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELED);
+    }
+
+    @Test
+    @DisplayName("PAID가 아닌 주문(PENDING, CANCELING, CANCELED)은 취소를 시작할 수 없다")
+    void startCancelingFailsWhenNotPaid() {
+        // given
+        Order pending = Order.create(1L, product(5), 1);
+        Order canceling = paidOrder();
+        canceling.startCanceling();
+        Order canceled = paidOrder();
+        canceled.startCanceling();
+        canceled.markCanceled();
+
+        // when // then
+        assertThatThrownBy(pending::startCanceling).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(canceling::startCanceling).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(canceled::startCanceling).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("CANCELING이 아닌 주문은 취소 완료 처리하거나 PAID로 되돌릴 수 없다")
+    void markCanceledAndRevertFailWhenNotCanceling() {
+        // given
+        Order paid = paidOrder();
+
+        // when // then
+        assertThatThrownBy(paid::markCanceled).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(paid::revertToPaid).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("CANCELING 주문은 PAID로 되돌려 다시 취소를 시작할 수 있다")
+    void revertToPaid() {
+        // given
+        Order order = paidOrder();
+        order.startCanceling();
+
+        // when
+        order.revertToPaid();
+        order.startCanceling();
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELING);
+    }
+
+    private Order paidOrder() {
+        Order order = Order.create(1L, product(5), 1);
+        order.startPaying();
+        order.markPaid();
+        return order;
+    }
+
+    @Test
     @DisplayName("PAYING 주문은 PENDING으로 되돌려 다시 결제를 시작할 수 있다")
     void revertToPending() {
         // given

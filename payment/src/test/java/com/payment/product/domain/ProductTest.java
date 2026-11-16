@@ -293,6 +293,81 @@ class ProductTest {
     }
 
     @Nested
+    class IncreaseStock {
+
+        @Test
+        @DisplayName("재고를 복구하면 재고가 늘고 판매중 상태가 유지된다")
+        void increase() {
+            // given
+            Product product = Product.create("키보드", 10_000, 3);
+
+            // when
+            product.increaseStock(2);
+
+            // then
+            assertThat(product.getStock()).isEqualTo(5);
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.ON_SALE);
+        }
+
+        @Test
+        @DisplayName("품절 상품의 재고를 복구하면 판매중(ON_SALE)으로 돌아간다")
+        void increaseFromSoldOut() {
+            // given
+            Product product = Product.create("키보드", 10_000, 2);
+            product.decreaseStock(2);
+
+            // when
+            product.increaseStock(2);
+
+            // then
+            assertThat(product.getStock()).isEqualTo(2);
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.ON_SALE);
+        }
+
+        @Test
+        @DisplayName("판매중지 상품도 재고는 복구되지만 STOPPED 상태는 유지된다")
+        void increaseKeepsStopped() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+            product.changeStatus(ProductStatus.STOPPED);
+
+            // when
+            product.increaseStock(1);
+
+            // then
+            assertThat(product.getStock()).isEqualTo(6);
+            assertThat(product.getStatus()).isEqualTo(ProductStatus.STOPPED);
+        }
+
+        @Test
+        @DisplayName("삭제된 상품도 환불된 주문의 재고는 복구할 수 있다")
+        void increaseWhenDeleted() {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+            product.delete();
+
+            // when
+            product.increaseStock(1);
+
+            // then
+            assertThat(product.getStock()).isEqualTo(6);
+        }
+
+        @ParameterizedTest(name = "수량 {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("복구 수량이 0 이하이면 예외가 난다")
+        void increaseFailsWhenQuantityNotPositive(int quantity) {
+            // given
+            Product product = Product.create("키보드", 10_000, 5);
+
+            // when // then
+            assertThatThrownBy(() -> product.increaseStock(quantity))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(product.getStock()).isEqualTo(5);
+        }
+    }
+
+    @Nested
     class Delete {
 
         @Test

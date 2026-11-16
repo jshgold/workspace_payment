@@ -116,6 +116,24 @@ public class Order {
         this.status = OrderStatus.PENDING;
     }
 
+    /** PG 취소 호출 전에 주문을 선점한다. 결제 완료(PAID) 주문만 취소할 수 있다. */
+    public void startCanceling() {
+        assertStatus(OrderStatus.PAID, "결제 취소를 시작할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.CANCELING;
+    }
+
+    /** PG 취소 결과를 반영해 취소 완료로 바꾼다. CANCELING일 때만 가능하다. */
+    public void markCanceled() {
+        assertStatus(OrderStatus.CANCELING, "취소 완료 처리할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.CANCELED;
+    }
+
+    /** PG가 취소를 명확히 거절해 결제가 그대로 살아 있을 때 선점을 풀어 재시도를 허용한다. */
+    public void revertToPaid() {
+        assertStatus(OrderStatus.CANCELING, "결제 완료로 되돌릴 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.PAID;
+    }
+
     private void assertStatus(OrderStatus expected, String message) {
         if (this.status != expected) {
             throw new IllegalStateException(message + " 현재 상태: " + this.status);
