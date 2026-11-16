@@ -6,12 +6,14 @@ import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
 import com.payment.payment.domain.Payment;
+import com.payment.payment.domain.PaymentCompletedEvent;
 import com.payment.payment.domain.PaymentRepository;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.dto.PaymentResponse;
 import com.payment.product.domain.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +34,7 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final PaymentRepository paymentRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     @Transactional
@@ -57,6 +60,10 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
                 Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
         // 아래 벌크 UPDATE가 영속성 컨텍스트를 비우므로, 응답은 그 전에 만든다.
         PaymentResponse response = PaymentResponse.of(order, payment);
+
+        // 발행은 재고 차감 전에 한다. 처리는 커밋 뒤(AFTER_COMMIT)라서, 아래에서 재고 부족으로 롤백되면 이벤트는 버려진다.
+        eventPublisher.publishEvent(new PaymentCompletedEvent(
+                orderId, payment.getId(), payment.getPgTransactionId(), payment.getAmount()));
 
         int decreased = productRepository.decreaseStockIfAvailable(order.getProductId(), order.getQuantity());
         if (decreased == 0) {

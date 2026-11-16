@@ -6,6 +6,7 @@ import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
 import com.payment.payment.domain.Payment;
+import com.payment.payment.domain.PaymentCompletedEvent;
 import com.payment.payment.domain.PaymentRepository;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.dto.PaymentResponse;
@@ -13,6 +14,7 @@ import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +36,7 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final PaymentRepository paymentRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     @Transactional
@@ -58,6 +61,10 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
         order.markPaid();
         Payment payment = paymentRepository.save(
                 Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
+
+        // 발행은 재고 차감 전에 한다. 처리는 커밋 뒤(AFTER_COMMIT)라서, 아래에서 재고 부족으로 롤백되면 이벤트는 버려진다.
+        eventPublisher.publishEvent(new PaymentCompletedEvent(
+                orderId, payment.getId(), payment.getPgTransactionId(), payment.getAmount()));
 
         Product product = productRepository.findByIdForUpdate(order.getProductId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
