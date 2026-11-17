@@ -2,7 +2,7 @@ spring:
   application:
     name: payment
   profiles:
-    default: ${PROFILE_SETTING:local}
+    active: ${PROFILE_SETTING:local}
     group:
       toss: local,toss
   data:

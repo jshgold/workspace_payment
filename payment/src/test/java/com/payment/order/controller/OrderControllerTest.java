@@ -41,7 +41,8 @@ class OrderControllerTest {
     void createSuccess() throws Exception {
         // given
         given(orderService.create(any(CreateOrderRequest.class)))
-                .willReturn(new OrderResponse(1L, 100L, 1L, 2, 20_000L, OrderStatus.PENDING, LocalDateTime.now()));
+                .willReturn(new OrderResponse(1L, "0190aaaa-bbbb-7ccc-8ddd-eeeeffff0001", 100L, 1L, 2, 20_000L,
+                        OrderStatus.PENDING, LocalDateTime.now()));
 
         // when // then
         mockMvc.perform(post("/api/orders")
@@ -52,6 +53,7 @@ class OrderControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "/api/orders/1"))
                 .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.orderNo").value("0190aaaa-bbbb-7ccc-8ddd-eeeeffff0001"))
                 .andExpect(jsonPath("$.totalPrice").value(20000));
     }
 

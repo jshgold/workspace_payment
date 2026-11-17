@@ -7,6 +7,8 @@ import com.payment.order.domain.OrderStatus;
 
 public record OrderResponse(
         Long id,
+        /** 외부 노출용 주문번호. 결제창을 열 때 PG에 넘기는 orderId와 같은 값이어야 한다. */
+        String orderNo,
         Long memberId,
         Long productId,
         int quantity,
@@ -18,6 +20,7 @@ public record OrderResponse(
     public static OrderResponse from(Order order) {
         return new OrderResponse(
                 order.getId(),
+                order.getOrderNo(),
                 order.getMemberId(),
                 order.getProductId(),
                 order.getQuantity(),

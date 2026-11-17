@@ -45,8 +45,13 @@ public class TossPaymentClient implements PaymentClient {
     private static final String CONFIRM_PATH = "/v1/payments/confirm";
     private static final String STATUS_DONE = "DONE";
 
-    /** 요청이 승인 단계까지 가지 못한 우리 쪽 연동 문제. 구매자 거절이 아니다. */
-    private static final Set<String> CONFIG_ERROR_CODES = Set.of("UNAUTHORIZED_KEY", "INVALID_API_KEY", "FORBIDDEN_REQUEST");
+    /**
+     * 요청이 승인 단계까지 가지 못한 우리 쪽 연동 문제(키 오류). 구매자 거절이 아니다.
+     * <p>
+     * FORBIDDEN_REQUEST(403 "허용되지 않은 요청")는 여기에 넣지 않는다. 범용 코드라서 키 문제로 단정할 수 없고,
+     * 실제 테스트에서 같은 키로 정상 승인된 직후 결제창 금액과 다른 금액으로 승인했을 때 이 코드가 돌아왔다.
+     */
+    private static final Set<String> CONFIG_ERROR_CODES = Set.of("UNAUTHORIZED_KEY", "INVALID_API_KEY");
 
     /** 4xx지만 이미 승인됐거나 승인 중일 수 있는 코드. 거절로 확정하면 안 된다. */
     private static final Set<String> UNKNOWN_RESULT_CODES = Set.of("ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING");
@@ -87,7 +92,7 @@ public class TossPaymentClient implements PaymentClient {
         TossError error = readBody(response, TossError.class);
         String code = error == null ? null : error.code();
         String message = error == null || error.message() == null ? "사유를 알 수 없습니다." : error.message();
-        log.warn("토스 승인 실패 응답. orderNo={}, status={}, code={}", request.orderNo(), status, code);
+        log.warn("토스 승인 실패 응답. orderNo={}, status={}, code={}, message={}", request.orderNo(), status, code, message);
 
         if (status >= 500 || status == 409 || (code != null && UNKNOWN_RESULT_CODES.contains(code))) {
             throw new PaymentTimeoutException();

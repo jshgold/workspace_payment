@@ -53,6 +53,7 @@ class OrderServiceTest {
         assertThat(response.status()).isEqualTo(OrderStatus.PENDING);
         assertThat(response.totalPrice()).isEqualTo(20_000L);
         assertThat(response.memberId()).isEqualTo(100L);
+        assertThat(response.orderNo()).hasSize(36);
     }
 
     @Test

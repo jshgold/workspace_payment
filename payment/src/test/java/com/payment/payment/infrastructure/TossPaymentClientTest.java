@@ -115,6 +115,7 @@ class TossPaymentClientTest {
     @ParameterizedTest(name = "[{index}] HTTP {0} {1}")
     @CsvSource({
             "403, REJECT_CARD_COMPANY",
+            "403, FORBIDDEN_REQUEST",
             "400, INVALID_REJECT_CARD",
             "400, EXCEED_MAX_AMOUNT",
             "400, INVALID_CARD_EXPIRATION",
@@ -161,10 +162,9 @@ class TossPaymentClientTest {
     @ParameterizedTest(name = "[{index}] HTTP {0} {1}")
     @CsvSource({
             "401, UNAUTHORIZED_KEY",
-            "400, INVALID_API_KEY",
-            "403, FORBIDDEN_REQUEST"
+            "400, INVALID_API_KEY"
     })
-    @DisplayName("키·접근 정책 오류는 구매자 거절이 아니라 우리 연동 문제(PaymentGatewayException)다")
+    @DisplayName("키 오류는 구매자 거절이 아니라 우리 연동 문제(PaymentGatewayException)다")
     void gatewayError(int status, String code) {
         // given
         respondWith(status, error(code, "인증 실패"));

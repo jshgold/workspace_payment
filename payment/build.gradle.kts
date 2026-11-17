@@ -67,3 +67,17 @@ dependencies {
 tasks.withType<Test> {
     useJUnitPlatform()
 }
+
+// build.gradle.kts
+tasks.bootRun {
+    val envFile = file(".env")
+    if (envFile.exists()) {
+        envFile.readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") && "=" in it }
+            .forEach { line ->
+                val (k, v) = line.split("=", limit = 2)
+                environment(k.trim(), v.trim().removeSurrounding("\""))
+            }
+    }
+}
