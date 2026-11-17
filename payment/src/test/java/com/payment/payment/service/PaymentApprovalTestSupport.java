@@ -101,8 +101,8 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         Order order = saveOrder(product);
 
         // when
-        PaymentResponse first = approvalFacade.approve(order.getId(), "key-1", AMOUNT);
-        PaymentResponse second = approvalFacade.approve(order.getId(), "key-1", AMOUNT);
+        PaymentResponse first = approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1");
+        PaymentResponse second = approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1");
 
         // then
         assertThat(second).isEqualTo(first);
@@ -118,12 +118,12 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         Product product = saveProduct(5);
         Order order = saveOrder(product);
         fakePaymentClient.willDecline("한도 초과");
-        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT))
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1"))
                 .isInstanceOf(PaymentDeclinedException.class);
 
         // when // then
         fakePaymentClient.willApprove();
-        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT))
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_DECLINED));
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
@@ -136,11 +136,11 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         Product product = saveProduct(5);
         Order order = saveOrder(product);
         fakePaymentClient.willTimeout();
-        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT))
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1"))
                 .isInstanceOf(PaymentTimeoutException.class);
 
         // when // then
-        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT))
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS));
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
@@ -154,10 +154,10 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         Product product = saveProduct(10);
         Order first = saveOrder(product);
         Order second = saveOrder(product);
-        approvalFacade.approve(first.getId(), "key-1", AMOUNT);
+        approvalFacade.approve(first.getId(), "key-1", AMOUNT, "payment-key-1");
 
         // when // then
-        assertThatThrownBy(() -> approvalFacade.approve(second.getId(), "key-1", AMOUNT))
+        assertThatThrownBy(() -> approvalFacade.approve(second.getId(), "key-1", AMOUNT, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED));
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
@@ -172,7 +172,7 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         Order order = saveOrder(product);
 
         // when // then
-        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L))
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH));
         assertThat(fakePaymentClient.approveCallCount()).isZero();
@@ -247,7 +247,7 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
                 ready.countDown();
                 try {
                     start.await();
-                    outcomes.add(new Outcome(approvalFacade.approve(orderId, key, AMOUNT), null));
+                    outcomes.add(new Outcome(approvalFacade.approve(orderId, key, AMOUNT, "payment-key-1"), null));
                 } catch (Throwable e) {
                     outcomes.add(new Outcome(null, e));
                 } finally {

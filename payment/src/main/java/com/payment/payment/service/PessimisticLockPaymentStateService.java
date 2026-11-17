@@ -43,7 +43,7 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
     public PaymentTarget startPaying(Long orderId) {
         Order order = findOrderForUpdate(orderId);
         order.startPaying();
-        return new PaymentTarget(order.getId(), order.getTotalPrice());
+        return new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
     }
 
     @Override

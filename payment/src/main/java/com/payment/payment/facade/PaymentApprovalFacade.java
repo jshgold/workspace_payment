@@ -32,14 +32,14 @@ public class PaymentApprovalFacade {
     private final IdempotencyService idempotencyService;
     private final PaymentFacade paymentFacade;
 
-    public PaymentResponse approve(Long orderId, String idempotencyKey, long requestedAmount) {
+    public PaymentResponse approve(Long orderId, String idempotencyKey, long requestedAmount, String paymentKey) {
         Optional<PaymentResponse> replayed = idempotencyService.begin(idempotencyKey, orderId, requestedAmount);
         if (replayed.isPresent()) {
             return replayed.get();
         }
 
         try {
-            PaymentResponse response = paymentFacade.approve(orderId);
+            PaymentResponse response = paymentFacade.approve(orderId, paymentKey);
             recordSuccess(idempotencyKey);
             return response;
         } catch (PaymentTimeoutException | PaymentCancelFailedException | DataIntegrityViolationException e) {

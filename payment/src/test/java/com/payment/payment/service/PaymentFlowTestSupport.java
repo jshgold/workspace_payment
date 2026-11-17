@@ -71,7 +71,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         Order order = saveOrder(product, 2);
 
         // when
-        PaymentResponse response = paymentFacade.approve(order.getId());
+        PaymentResponse response = paymentFacade.approve(order.getId(), "payment-key-1");
 
         // then
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.PAID);
@@ -92,7 +92,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willDecline("한도 초과");
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId())).isInstanceOf(PaymentDeclinedException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1")).isInstanceOf(PaymentDeclinedException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
         assertThat(paymentRepository.count()).isZero();
         assertThat(stock(product)).isEqualTo(5);
@@ -108,7 +108,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willTimeout();
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId())).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
         assertThat(paymentRepository.count()).isZero();
         assertThat(stock(product)).isEqualTo(5);
@@ -125,7 +125,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
 
         // when // then
         // 구현체마다 예외 타입은 다르다. (비관적 락: 도메인의 IllegalStateException, 원자적 쿼리: BusinessException)
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId()))
+        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("재고가 부족");
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
@@ -145,7 +145,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willFailCancel();
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId()))
+        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
                 .isInstanceOf(PaymentCancelFailedException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
         assertThat(paymentRepository.count()).isZero();

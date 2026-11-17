@@ -2,6 +2,7 @@ package com.payment.order.domain;
 
 import java.time.LocalDateTime;
 
+import com.payment.common.util.UuidV7;
 import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductStatus;
 
@@ -13,6 +14,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -21,14 +23,25 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 @Entity
-@Table(name = "orders")
+@Table(name = "orders", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_orders_order_no", columnNames = {"order_no"})
+})
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Order {
 
+    private static final int ORDER_NO_LENGTH = 36;
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /**
+     * 외부 노출용 주문번호(UUIDv7). PG에 보내는 orderId이기도 하다.
+     * 내부 PK(순차 정수)를 PG나 API로 내보내면 주문 건수가 추측되므로 별도 값을 둔다. 한 번 정해지면 바꾸지 않는다.
+     */
+    @Column(name = "order_no", nullable = false, updatable = false, length = ORDER_NO_LENGTH)
+    private String orderNo;
 
     @Column(name = "member_id", nullable = false)
     private Long memberId;
@@ -57,7 +70,8 @@ public class Order {
     private LocalDateTime updatedAt;
 
     @Builder(access = AccessLevel.PRIVATE)
-    private Order(Long memberId, Long productId, int quantity, long totalPrice, OrderStatus status) {
+    private Order(String orderNo, Long memberId, Long productId, int quantity, long totalPrice, OrderStatus status) {
+        this.orderNo = orderNo;
         this.memberId = memberId;
         this.productId = productId;
         this.quantity = quantity;
@@ -87,6 +101,7 @@ public class Order {
                     "재고가 부족합니다. 현재 재고: " + product.getStock() + ", 주문 수량: " + quantity);
         }
         return Order.builder()
+                .orderNo(UuidV7.generate().toString())
                 .memberId(memberId)
                 .productId(product.getId())
                 .quantity(quantity)

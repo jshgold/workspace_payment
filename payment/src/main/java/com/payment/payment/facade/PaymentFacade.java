@@ -5,6 +5,7 @@ import com.payment.common.exception.ErrorCode;
 import com.payment.payment.domain.PaymentCancelFailedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
+import com.payment.payment.domain.PaymentGatewayException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.dto.PaymentResponse;
@@ -39,10 +40,14 @@ public class PaymentFacade {
     private final PaymentStateService paymentStateService;
     private final PaymentClient paymentClient;
 
-    public PaymentResponse approve(Long orderId) {
+    public PaymentResponse approve(Long orderId, String paymentKey) {
+        // 주문을 선점한 뒤에 입력 오류로 실패하면 PAYING이 남으므로, 선점 전에 확인한다.
+        if (paymentKey == null || paymentKey.isBlank()) {
+            throw new IllegalArgumentException("결제 키는 필수입니다.");
+        }
         PaymentTarget target = paymentStateService.startPaying(orderId);
 
-        PgApproveResult approveResult = requestApproval(target);
+        PgApproveResult approveResult = requestApproval(target, paymentKey);
 
         if (approveResult.approvedAmount() != target.amount()) {
             log.error("PG 승인 금액 불일치. orderId={}, 서버 금액={}, 승인 금액={}",
@@ -54,11 +59,11 @@ public class PaymentFacade {
         return complete(orderId, approveResult);
     }
 
-    private PgApproveResult requestApproval(PaymentTarget target) {
+    private PgApproveResult requestApproval(PaymentTarget target, String paymentKey) {
         try {
-            return paymentClient.approve(new PgApproveRequest(target.orderId(), target.amount()));
-        } catch (PaymentDeclinedException e) {
-            // 명확한 거절: 돈이 나가지 않았으므로 재시도할 수 있게 선점을 푼다.
+            return paymentClient.approve(new PgApproveRequest(target.orderNo(), paymentKey, target.amount()));
+        } catch (PaymentDeclinedException | PaymentGatewayException e) {
+            // 명확한 거절(또는 우리 연동 문제로 요청이 승인 단계에 가지 못함): 돈이 나가지 않았으므로 재시도할 수 있게 선점을 푼다.
             paymentStateService.revertToPending(target.orderId());
             throw e;
         }

@@ -33,6 +33,7 @@ public class PaymentController {
             @Size(max = IdempotencyKey.KEY_MAX_LENGTH, message = "Idempotency-Key는 100자 이하여야 합니다.")
             String idempotencyKey,
             @Valid @RequestBody ApprovePaymentRequest request) {
-        return ResponseEntity.ok(paymentApprovalFacade.approve(orderId, idempotencyKey, request.amount()));
+        return ResponseEntity.ok(
+                paymentApprovalFacade.approve(orderId, idempotencyKey, request.amount(), request.paymentKey()));
     }
 }

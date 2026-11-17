@@ -93,7 +93,7 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         Order order = saveOrder(product, 2);
 
         // when
-        PaymentResponse response = facade(strategy).approve(order.getId());
+        PaymentResponse response = facade(strategy).approve(order.getId(), "payment-key-1");
 
         // then
         ArgumentCaptor<PaymentCompletedEvent> captor = ArgumentCaptor.forClass(PaymentCompletedEvent.class);
@@ -115,7 +115,7 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         drainStock(product, 4);
 
         // when // then
-        assertThatThrownBy(() -> facade(strategy).approve(order.getId()))
+        assertThatThrownBy(() -> facade(strategy).approve(order.getId(), "payment-key-1"))
                 .isInstanceOf(RuntimeException.class);
         verify(paymentNotifier, after(500).never()).notifyPaid(any());
         assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.PENDING);

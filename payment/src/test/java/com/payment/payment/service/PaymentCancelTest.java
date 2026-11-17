@@ -90,7 +90,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        PaymentResponse approved = approveFacade.approve(order.getId());
+        PaymentResponse approved = approveFacade.approve(order.getId(), "payment-key-1");
         assertThat(stock(product)).isEqualTo(3);
 
         // when
@@ -110,7 +110,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId());
+        approveFacade.approve(order.getId(), "payment-key-1");
         cancelFacade.cancel(order.getId(), "단순 변심");
 
         // when // then
@@ -142,7 +142,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId());
+        approveFacade.approve(order.getId(), "payment-key-1");
         fakePaymentClient.willFailCancel();
 
         // when // then
@@ -166,7 +166,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(2);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId());
+        approveFacade.approve(order.getId(), "payment-key-1");
         assertThat(productStatus(product)).isEqualTo(ProductStatus.SOLD_OUT);
 
         // when
@@ -184,7 +184,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId());
+        approveFacade.approve(order.getId(), "payment-key-1");
         fakePaymentClient.delay(Duration.ofMillis(300));
 
         // when
@@ -215,7 +215,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         List<Order> pendingOrders = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
             Order paid = saveOrder(product, 1);
-            approveFacade.approve(paid.getId());
+            approveFacade.approve(paid.getId(), "payment-key-1");
             paidOrders.add(paid);
             pendingOrders.add(saveOrder(product, 1));
         }
@@ -226,7 +226,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         long start = System.nanoTime();
         List<Throwable> errors = runConcurrently(THREAD_COUNT, index -> index < 5
                 ? () -> cancelFacade.cancel(paidOrders.get(index).getId(), "취소")
-                : () -> approveFacade.approve(pendingOrders.get(index - 5).getId()));
+                : () -> approveFacade.approve(pendingOrders.get(index - 5).getId(), "payment-key-1"));
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
         // then: 5 + 취소 5 - 승인 5 = 5

@@ -49,7 +49,7 @@ class PaymentFacadeTest {
     @BeforeEach
     void setUp() {
         paymentFacade = new PaymentFacade(paymentStateService, paymentClient);
-        given(paymentStateService.startPaying(ORDER_ID)).willReturn(new PaymentTarget(ORDER_ID, AMOUNT));
+        given(paymentStateService.startPaying(ORDER_ID)).willReturn(new PaymentTarget(ORDER_ID, "order-no-1", AMOUNT));
     }
 
     @Test
@@ -57,16 +57,30 @@ class PaymentFacadeTest {
     void approveSuccess() {
         // given
         PaymentResponse expected = new PaymentResponse(ORDER_ID, 10L, "pg-tx-1", AMOUNT, OrderStatus.PAID);
-        given(paymentClient.approve(new PgApproveRequest(ORDER_ID, AMOUNT))).willReturn(APPROVED);
+        given(paymentClient.approve(new PgApproveRequest("order-no-1", "payment-key-1", AMOUNT))).willReturn(APPROVED);
         given(paymentStateService.complete(ORDER_ID, APPROVED)).willReturn(expected);
 
         // when
-        PaymentResponse response = paymentFacade.approve(ORDER_ID);
+        PaymentResponse response = paymentFacade.approve(ORDER_ID, "payment-key-1");
 
         // then
         assertThat(response).isEqualTo(expected);
         verify(paymentClient, never()).cancel(anyString(), anyString());
         verify(paymentStateService, never()).revertToPending(any());
+    }
+
+    @Test
+    @DisplayName("우리 연동 문제(키·IP 등)로 PG가 요청을 받지 않으면 돈이 나가지 않았으므로 PENDING으로 되돌린다")
+    void gatewayError() {
+        // given
+        given(paymentClient.approve(any())).willThrow(new com.payment.payment.domain.PaymentGatewayException("UNAUTHORIZED_KEY"));
+
+        // when // then
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1"))
+                .isInstanceOf(com.payment.payment.domain.PaymentGatewayException.class);
+        verify(paymentStateService).revertToPending(ORDER_ID);
+        verify(paymentStateService, never()).complete(any(), any());
+        verify(paymentClient, never()).cancel(anyString(), anyString());
     }
 
     @Test
@@ -76,7 +90,7 @@ class PaymentFacadeTest {
         given(paymentClient.approve(any())).willThrow(new PaymentDeclinedException("한도 초과"));
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID)).isInstanceOf(PaymentDeclinedException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1")).isInstanceOf(PaymentDeclinedException.class);
         verify(paymentStateService).revertToPending(ORDER_ID);
         verify(paymentStateService, never()).complete(any(), any());
         verify(paymentClient, never()).cancel(anyString(), anyString());
@@ -89,7 +103,7 @@ class PaymentFacadeTest {
         given(paymentClient.approve(any())).willThrow(new PaymentTimeoutException());
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID)).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
         verify(paymentStateService, never()).revertToPending(any());
         verify(paymentStateService, never()).complete(any(), any());
         verify(paymentClient, never()).cancel(anyString(), anyString());
@@ -102,7 +116,7 @@ class PaymentFacadeTest {
         given(paymentClient.approve(any())).willReturn(new PgApproveResult("pg-tx-1", AMOUNT - 1));
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID))
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_AMOUNT_MISMATCH));
         verify(paymentClient).cancel("pg-tx-1", "승인 금액 불일치");
@@ -118,7 +132,7 @@ class PaymentFacadeTest {
         given(paymentStateService.complete(ORDER_ID, APPROVED)).willThrow(new IllegalStateException("재고가 부족합니다."));
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1")).isInstanceOf(IllegalStateException.class);
         verify(paymentClient).cancel("pg-tx-1", "결제 반영 실패");
         verify(paymentStateService).revertToPending(ORDER_ID);
     }
@@ -132,7 +146,7 @@ class PaymentFacadeTest {
         willThrow(new PaymentCancelFailedException("pg-tx-1")).given(paymentClient).cancel(anyString(), anyString());
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID)).isInstanceOf(PaymentCancelFailedException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1")).isInstanceOf(PaymentCancelFailedException.class);
         verify(paymentStateService, never()).revertToPending(any());
     }
 
@@ -145,7 +159,7 @@ class PaymentFacadeTest {
                 .willThrow(new DataIntegrityViolationException("Duplicate entry"));
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> paymentFacade.approve(ORDER_ID, "payment-key-1")).isInstanceOf(DataIntegrityViolationException.class);
         verify(paymentClient, never()).cancel(anyString(), anyString());
         verify(paymentStateService, never()).revertToPending(any());
     }

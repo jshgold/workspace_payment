@@ -29,7 +29,8 @@ import org.hibernate.annotations.CreationTimestamp;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Payment {
 
-    private static final int PG_TRANSACTION_ID_MAX_LENGTH = 100;
+    /** 토스 paymentKey 최대 길이(200자)에 맞춘다. PG가 식별자 길이를 늘릴 수 있어 여유를 두지 않는다. */
+    private static final int PG_TRANSACTION_ID_MAX_LENGTH = 200;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

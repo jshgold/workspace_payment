@@ -44,7 +44,7 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
             throw rejection(orderId, "결제를 시작할 수 없는 주문 상태입니다.");
         }
         Order order = findOrder(orderId);
-        return new PaymentTarget(order.getId(), order.getTotalPrice());
+        return new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
     }
 
     @Override

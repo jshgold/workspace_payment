@@ -55,10 +55,10 @@ class PaymentApprovalFacadeTest {
     void success() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID)).willReturn(RESPONSE);
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1")).willReturn(RESPONSE);
 
         // when
-        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT);
+        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1");
 
         // then
         assertThat(response).isEqualTo(RESPONSE);
@@ -72,11 +72,11 @@ class PaymentApprovalFacadeTest {
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.of(RESPONSE));
 
         // when
-        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT);
+        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1");
 
         // then
         assertThat(response).isEqualTo(RESPONSE);
-        verify(paymentFacade, never()).approve(any());
+        verify(paymentFacade, never()).approve(any(), any());
         verify(idempotencyService, never()).succeed(any());
     }
 
@@ -85,10 +85,10 @@ class PaymentApprovalFacadeTest {
     void declinedIsRecordedAsFailure() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID)).willThrow(new PaymentDeclinedException("한도 초과"));
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1")).willThrow(new PaymentDeclinedException("한도 초과"));
 
         // when // then
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT)).isInstanceOf(PaymentDeclinedException.class);
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1")).isInstanceOf(PaymentDeclinedException.class);
         verify(idempotencyService).fail(KEY, ErrorCode.PAYMENT_DECLINED);
     }
 
@@ -97,10 +97,10 @@ class PaymentApprovalFacadeTest {
     void stateConflictIsRecordedAsFailure() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID)).willThrow(new IllegalStateException("결제 중"));
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1")).willThrow(new IllegalStateException("결제 중"));
 
         // when // then
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1")).isInstanceOf(IllegalStateException.class);
         verify(idempotencyService).fail(KEY, ErrorCode.STATE_CONFLICT);
     }
 
@@ -109,10 +109,10 @@ class PaymentApprovalFacadeTest {
     void timeoutLeavesKeyInProgress() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID)).willThrow(new PaymentTimeoutException());
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1")).willThrow(new PaymentTimeoutException());
 
         // when // then
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT)).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
         verify(idempotencyService, never()).fail(any(), any());
         verify(idempotencyService, never()).succeed(any());
     }
@@ -122,13 +122,13 @@ class PaymentApprovalFacadeTest {
     void unknownOutcomesLeaveKeyInProgress() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID))
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1"))
                 .willThrow(new PaymentCancelFailedException("pg-tx-1"))
                 .willThrow(new DataIntegrityViolationException("Duplicate entry"));
 
         // when // then
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT)).isInstanceOf(PaymentCancelFailedException.class);
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1")).isInstanceOf(PaymentCancelFailedException.class);
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1")).isInstanceOf(DataIntegrityViolationException.class);
         verify(idempotencyService, never()).fail(any(), any());
     }
 
@@ -137,11 +137,11 @@ class PaymentApprovalFacadeTest {
     void successRecordFailureDoesNotHideSuccess() {
         // given
         given(idempotencyService.begin(KEY, ORDER_ID, AMOUNT)).willReturn(Optional.empty());
-        given(paymentFacade.approve(ORDER_ID)).willReturn(RESPONSE);
+        given(paymentFacade.approve(ORDER_ID, "payment-key-1")).willReturn(RESPONSE);
         willThrow(new IllegalStateException("기록 실패")).given(idempotencyService).succeed(KEY);
 
         // when
-        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT);
+        PaymentResponse response = facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1");
 
         // then
         assertThat(response).isEqualTo(RESPONSE);
@@ -155,9 +155,9 @@ class PaymentApprovalFacadeTest {
                 .willThrow(new BusinessException(ErrorCode.PAYMENT_IN_PROGRESS));
 
         // when // then
-        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT))
+        assertThatThrownBy(() -> facade.approve(ORDER_ID, KEY, AMOUNT, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS));
-        verify(paymentFacade, never()).approve(any());
+        verify(paymentFacade, never()).approve(any(), any());
     }
 }

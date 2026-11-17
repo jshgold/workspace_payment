@@ -32,7 +32,7 @@ class PaymentControllerTest {
 
     private static final String URL = "/api/orders/1/payments/approve";
     private static final String BODY = """
-            {"amount": 20000}
+            {"amount": 20000, "paymentKey": "payment-key-1"}
             """;
 
     @Autowired
@@ -45,7 +45,7 @@ class PaymentControllerTest {
     @DisplayName("올바른 요청이면 200과 결제 결과를 응답하고 헤더의 키와 본문의 금액을 Facade에 넘긴다")
     void approveSuccess() throws Exception {
         // given
-        given(paymentApprovalFacade.approve(1L, "key-1", 20_000L))
+        given(paymentApprovalFacade.approve(1L, "key-1", 20_000L, "payment-key-1"))
                 .willReturn(new PaymentResponse(1L, 10L, "pg-tx-1", 20_000L, OrderStatus.PAID));
 
         // when // then
@@ -66,7 +66,7 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong());
+        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -83,7 +83,7 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong());
+        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -102,14 +102,37 @@ class PaymentControllerTest {
                                 {"amount": 0}
                                 """))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong());
+        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("결제 키(paymentKey)가 없거나 공백이거나 200자를 넘으면 400이고 Facade를 호출하지 않는다")
+    void invalidPaymentKey() throws Exception {
+        // given
+        String missing = """
+                {"amount": 20000}
+                """;
+        String blank = """
+                {"amount": 20000, "paymentKey": " "}
+                """;
+        String tooLong = "{\"amount\": 20000, \"paymentKey\": \"" + "p".repeat(201) + "\"}";
+
+        // when // then
+        for (String body : new String[] {missing, blank, tooLong}) {
+            mockMvc.perform(post(URL)
+                            .header("Idempotency-Key", "key-1")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
     @DisplayName("같은 키의 첫 요청이 처리 중이면 409와 PAYMENT_IN_PROGRESS 코드를 응답한다")
     void inProgress() throws Exception {
         // given
-        given(paymentApprovalFacade.approve(any(), any(), anyLong()))
+        given(paymentApprovalFacade.approve(any(), any(), anyLong(), any()))
                 .willThrow(new BusinessException(ErrorCode.PAYMENT_IN_PROGRESS));
 
         // when // then

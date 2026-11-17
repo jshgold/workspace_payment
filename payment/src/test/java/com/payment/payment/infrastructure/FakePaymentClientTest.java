@@ -25,7 +25,7 @@ class FakePaymentClientTest {
     }
 
     private PgApproveRequest request() {
-        return new PgApproveRequest(1L, 30_000L);
+        return new PgApproveRequest("order-no-1", "payment-key-1", 30_000L);
     }
 
     @Test
