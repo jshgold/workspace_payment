@@ -13,6 +13,7 @@ import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,6 +28,7 @@ import org.springframework.stereotype.Component;
  * 시나리오 설정은 테스트 시작 전에 한 번 하고, 테스트 사이에는 {@link #reset()}으로 초기화한다.
  */
 @Component
+@ConditionalOnProperty(name = "app.pg.provider", havingValue = "fake", matchIfMissing = true)
 public class FakePaymentClient implements PaymentClient {
 
     private enum Scenario { APPROVE, DECLINE, TIMEOUT }

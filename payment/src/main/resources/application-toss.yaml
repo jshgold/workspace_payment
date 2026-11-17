@@ -1,0 +1,10 @@
+# 실제 토스페이먼츠(테스트 키) 연동 프로필. 실행: --spring.profiles.active=local,toss
+# 시크릿 키는 절대 이 파일에 쓰지 않는다. 환경변수 TOSS_SECRET_KEY로만 주입한다.
+app:
+  pg:
+    provider: toss
+    toss:
+      secret-key: ${TOSS_SECRET_KEY:}
+      base-url: https://api.tosspayments.com   # 공식 문서로 재확인 필요 (4-2 전)
+      connect-timeout: 2s
+      read-timeout: 5s

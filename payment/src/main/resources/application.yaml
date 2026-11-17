@@ -2,7 +2,9 @@ spring:
   application:
     name: payment
   profiles:
-    default: local
+    default: ${PROFILE_SETTING:local}
+    group:
+      toss: local,toss
   data:
     web:
       pageable:

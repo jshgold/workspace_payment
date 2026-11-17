@@ -37,3 +37,9 @@ out/
 .vscode/
 .tokensave
 .claude
+### Secrets ###
+.env
+.env.*
+application-secret.yml
+*.pem
+*credentials*
