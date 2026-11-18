@@ -16,6 +16,7 @@ import com.payment.payment.domain.PgApproveResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.convert.DurationStyle;
 import org.springframework.stereotype.Component;
 
 /**
@@ -54,8 +55,17 @@ public class FakePaymentClient implements PaymentClient {
         this(Duration.ZERO);
     }
 
+    /**
+     * 지연을 {@code Duration}이 아니라 문자열로 받아 직접 파싱한다.
+     * {@code "300ms"} 같은 표기는 Spring Boot 변환기가 있어야 {@code Duration}으로 바뀌는데,
+     * {@code ApplicationContextRunner} 같은 최소 컨텍스트에는 그 변환기가 없어 기동이 실패하기 때문이다.
+     */
     @Autowired
-    public FakePaymentClient(@Value("${app.pg.fake.delay:0ms}") Duration initialDelay) {
+    public FakePaymentClient(@Value("${app.pg.fake.delay:0ms}") String initialDelay) {
+        this(DurationStyle.detectAndParse(initialDelay));
+    }
+
+    private FakePaymentClient(Duration initialDelay) {
         if (initialDelay == null || initialDelay.isNegative()) {
             throw new IllegalArgumentException("가짜 PG 지연은 0 이상이어야 합니다.");
         }
