@@ -3,6 +3,13 @@ package com.payment.payment.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
@@ -21,8 +28,12 @@ import com.payment.support.IntegrationTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.util.ClassUtils;
 
 /**
  * 결제 승인 시나리오(정상, PG 실패, DB 실패 후 보상)를 실제 MySQL과 가짜 PG로 검증하는 공통 틀.
@@ -31,7 +42,10 @@ import org.springframework.beans.factory.annotation.Autowired;
  */
 public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
 
+    private static final Logger log = LoggerFactory.getLogger(PaymentFlowTestSupport.class);
+
     private static final long PRICE = 10_000L;
+    private static final int CONTENDING_ORDERS = 10;
 
     @Autowired
     protected ProductRepository productRepository;
@@ -181,6 +195,84 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         // when // then
         assertThatThrownBy(() -> stateService().startPaying(order.getId()))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * [트러블슈팅 재현] docs/troubleshooting/payment-stock-deduction-timing.md
+     * 재고를 PG 승인 뒤에 차감하므로, 재고 경합에서 질 주문도 전부 PG 승인까지 가고 그 뒤 보상 취소된다.
+     * 이 테스트는 <b>현재 구조의 문제를 고정</b>한다. 재고 차감을 PG 호출 앞으로 옮기면 PG 호출 횟수 단언이 깨지는 것이 개선의 증거다.
+     */
+    @Test
+    @Tag("concurrency")
+    @DisplayName("재고 1개 상품에 서로 다른 주문 10건이 동시에 결제하면 1건만 성공하지만, PG 승인은 10번 모두 일어나고 진 9건은 승인 후 취소된다")
+    void stockContentionCausesApproveThenCancel() throws InterruptedException {
+        // given
+        int initialStock = 1;
+        Product product = saveProduct(initialStock);
+        List<Order> orders = new ArrayList<>();
+        for (int i = 0; i < CONTENDING_ORDERS; i++) {
+            orders.add(saveOrder(product, 1));
+        }
+
+        // when
+        long startedAt = System.currentTimeMillis();
+        List<Throwable> failures = approveConcurrently(orders);
+        long elapsedMs = System.currentTimeMillis() - startedAt;
+
+        // then
+        long succeeded = CONTENDING_ORDERS - failures.size();
+        long stockShortages = failures.stream()
+                .filter(e -> e.getMessage() != null && e.getMessage().contains("재고가 부족"))
+                .count();
+        log.info("[{}] 재고 {} / 주문 {}건 동시 결제 → 성공 {}, 재고 부족 {}, 기타 실패 {}, PG 승인 {}회, PG 취소 {}회, 소요 {}ms",
+                ClassUtils.getUserClass(stateService()).getSimpleName(), initialStock, CONTENDING_ORDERS,
+                succeeded, stockShortages, failures.size() - stockShortages,
+                fakePaymentClient.approveCallCount(), fakePaymentClient.cancelCallCount(), elapsedMs);
+
+        assertThat(succeeded).isEqualTo(1);
+        assertThat(stockShortages).as("실패는 모두 재고 부족이어야 한다").isEqualTo(CONTENDING_ORDERS - 1);
+        assertThat(succeeded * 1 + stock(product)).isEqualTo(initialStock);
+        assertThat(paymentRepository.count()).isEqualTo(1);
+
+        // 문제의 증거: 진 주문도 PG 승인까지 갔고, 그만큼 보상 취소가 일어났다.
+        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(CONTENDING_ORDERS);
+        assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(CONTENDING_ORDERS - 1);
+
+        // 진 주문은 승인 → 취소를 거쳐 PENDING으로 돌아왔다. (재고 0인데도 다시 결제를 시도할 수 있다)
+        long paid = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PAID).count();
+        long pending = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PENDING).count();
+        assertThat(paid).isEqualTo(1);
+        assertThat(pending).isEqualTo(CONTENDING_ORDERS - 1);
+    }
+
+    private List<Throwable> approveConcurrently(List<Order> orders) throws InterruptedException {
+        ExecutorService executor = Executors.newFixedThreadPool(orders.size());
+        CountDownLatch ready = new CountDownLatch(orders.size());
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(orders.size());
+        ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
+
+        for (int i = 0; i < orders.size(); i++) {
+            Long orderId = orders.get(i).getId();
+            String paymentKey = "payment-key-" + i;
+            executor.submit(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    paymentFacade.approve(orderId, paymentKey);
+                } catch (Throwable e) {
+                    failures.add(e);
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        ready.await();
+        start.countDown();
+        done.await();
+        executor.shutdown();
+        return List.copyOf(failures);
     }
 
     private Product saveProduct(int stock) {

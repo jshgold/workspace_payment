@@ -13,6 +13,8 @@ import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +28,9 @@ import org.springframework.stereotype.Component;
  * </ul>
  * 동시성 테스트에서 여러 스레드가 호출하므로 상태는 스레드 안전하게 관리한다.
  * 시나리오 설정은 테스트 시작 전에 한 번 하고, 테스트 사이에는 {@link #reset()}으로 초기화한다.
+ * <p>
+ * 서버로 띄워 부하 테스트(k6)를 할 때는 코드로 지연을 걸 수 없으므로 {@code app.pg.fake.delay}(기본 0)로 초기 지연을 정한다.
+ * {@link #reset()}은 이 초기 지연으로 되돌린다.
  */
 @Component
 @ConditionalOnProperty(name = "app.pg.provider", havingValue = "fake", matchIfMissing = true)
@@ -33,14 +38,30 @@ public class FakePaymentClient implements PaymentClient {
 
     private enum Scenario { APPROVE, DECLINE, TIMEOUT }
 
+    private final Duration initialDelay;
+
     private volatile Scenario scenario = Scenario.APPROVE;
     private volatile String declineReason = "한도 초과";
-    private volatile Duration delay = Duration.ZERO;
+    private volatile Duration delay;
     private volatile boolean cancelFails = false;
 
     private final AtomicInteger approveCalls = new AtomicInteger();
     private final AtomicInteger cancelCalls = new AtomicInteger();
     private final List<String> canceledTransactionIds = new CopyOnWriteArrayList<>();
+
+    /** 단위 테스트용. 지연 없이 시작한다. */
+    public FakePaymentClient() {
+        this(Duration.ZERO);
+    }
+
+    @Autowired
+    public FakePaymentClient(@Value("${app.pg.fake.delay:0ms}") Duration initialDelay) {
+        if (initialDelay == null || initialDelay.isNegative()) {
+            throw new IllegalArgumentException("가짜 PG 지연은 0 이상이어야 합니다.");
+        }
+        this.initialDelay = initialDelay;
+        this.delay = initialDelay;
+    }
 
     public void willApprove() {
         this.scenario = Scenario.APPROVE;
@@ -79,7 +100,7 @@ public class FakePaymentClient implements PaymentClient {
     public void reset() {
         this.scenario = Scenario.APPROVE;
         this.declineReason = "한도 초과";
-        this.delay = Duration.ZERO;
+        this.delay = initialDelay;
         this.cancelFails = false;
         approveCalls.set(0);
         cancelCalls.set(0);
