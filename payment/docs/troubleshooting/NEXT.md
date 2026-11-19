@@ -16,7 +16,7 @@
 | 문서 | 상태 | 요약 |
 |---|---|---|
 | `payment-stock-deduction-timing.md` | **현재 구조 측정 완료, 개선 미적용** | 재고를 PG 승인 뒤에 차감 → 재고 1에 N건이면 PG 승인 N, 취소 N-1. JUnit·k6·DB로 확인. 스레드 고갈은 해피 케이스에서도 같은 수준이라 **경합 탓으로 볼 수 없다**고 결론을 고쳤다. |
-| `payment-transaction-granularity.md` | **측정 중 (다음 작업: 부하 중 대기 시간)** | 단건 실측 완료: 이긴 요청 트랜잭션 4/SQL 12, 진 요청 트랜잭션 5/SQL 12, 주문 행 `FOR UPDATE` 3/4번. 진 요청도 Payment INSERT 후 롤백함(IDENTITY). 해피 케이스가 계산상 1.5초여야 하는데 3.5초 걸린 원인은 아직 미확인. |
+| `payment-transaction-granularity.md` | **현재 구조 측정 완료, 개선 미적용** (병목 = 커넥션 풀, 2-7) | 단건 실측 완료: 이긴 요청 트랜잭션 4/SQL 12, 진 요청 트랜잭션 5/SQL 12, 주문 행 `FOR UPDATE` 3/4번. 진 요청도 Payment INSERT 후 롤백함(IDENTITY). 해피 케이스가 계산상 1.5초여야 하는데 3.5초 걸린 원인은 아직 미확인. |
 | `product-list-pagination.md` | 완료 (phase-01) | 이번 작업과 무관 |
 
 아직 문서로 만들지 않은 후보 (이전 세션에서 정리만 함):
@@ -33,7 +33,8 @@
    - Hibernate 7은 `generate_statistics=true`만으로는 안 찍힌다. `--logging.level.org.hibernate.session.metrics=debug`가 필요하다. 트랜잭션 경계는 `--logging.level.org.springframework.orm.jpa.JpaTransactionManager=debug`로 본다.
 2-1. ~~단건 구간별(DB / PG) 소요 시간 기준값~~ — 완료 (2026-11-19, 문서 2-1-1). 이긴 요청 DB 45ms + PG 304ms, 진 요청 DB 65ms + PG 609ms.
 2-2. ~~200건 / 1000건 동시 해피 케이스 (결제만)~~ — 완료 (2026-11-19, 문서 2-4 ~ 2-6). 요청 1건이 스레드를 쥐는 시간 0.35초 → 0.66초(DB 구간 45 → 약 360ms), 처리량 한계 약 300건/초. 1000건의 고객 체감 2초는 대부분 스레드 줄서기.
-3. **부하 중 대기 시간 (다음 작업)** — DB 구간 증가(약 300ms)가 정말 커넥션 대기인지 확인한다. — 해피 케이스(재고 1000, 주문 1000, PG 지연 300ms)를 다시 돌리며 Hikari 커넥션 대기와 상품 행 락 대기를 계측. 계측 방법은 아직 정하지 않았다. (Hikari 메트릭/로그, `performance_schema.data_lock_waits` 등) → 정하기 전에 사용자에게 제안하고 확인받는다.
+3. ~~부하 중 대기 시간~~ — 완료 (2026-11-19, 문서 2-7). 200건에서 DB 구간 376ms 중 커넥션 대기 342ms, COMMIT 8ms, 나머지 26ms. COMMIT·상품 행 락 대기는 늘지 않았다. **병목은 커넥션 풀이고, 비용은 요청당 트랜잭션 수에 비례한다.**
+4. **다음 작업: 미정** — 측정은 끝났다. 개선 방식 결정(문서 5번 표, `payment-redesign-discussion.md`)은 사용자 지시를 기다린다. — 해피 케이스(재고 1000, 주문 1000, PG 지연 300ms)를 다시 돌리며 Hikari 커넥션 대기와 상품 행 락 대기를 계측. 계측 방법은 아직 정하지 않았다. (Hikari 메트릭/로그, `performance_schema.data_lock_waits` 등) → 정하기 전에 사용자에게 제안하고 확인받는다.
 
 ## 4. 실행 방법
 
@@ -62,6 +63,7 @@ python3 -I k6/analyze_starvation.py <json 파일> <로그 파일>   # 상품 조
 - `FakePaymentClient`: `app.pg.fake.delay` 프로퍼티로 초기 지연 설정 (문자열로 받아 `DurationStyle`로 파싱. `Duration`으로 받으면 `PaymentClientSwitchTest`의 최소 컨텍스트에서 변환 실패함)
 - `FakePgController`: fake 모드 전용 `GET /api/fake-pg/stats`, `POST /api/fake-pg/reset`
 - `PaymentSegmentTimer`: 결제 승인 1건의 구간별 소요 시간(`begin`, `startPaying`, `pgApprove`, `complete`, `pgCancel`, `revertToPending`, `succeed`/`fail`)을 요청당 한 줄로 남긴다. `--logging.level.payment.timing=debug`로 켜고, 꺼져 있으면 시간을 재지 않는다. 부하 측정에서는 SQL 로그를 끄고 이것만 켠다.
+- `JdbcTimingDataSource` / `JdbcTiming` / `JdbcTimingConfig` (`common` 패키지): `payment.timing`이 DEBUG일 때만 DataSource를 감싸, DB 구간마다 커넥션 대기와 COMMIT 시간을 `complete=103.3ms(conn=85.6ms,commit=1.2ms)` 형식으로 붙인다.
 - JUnit 재현 테스트: `PaymentFlowTestSupport.stockContentionCausesApproveThenCancel()` (현재 구조의 문제를 기대값으로 고정. 개선 후 PG 승인 1/취소 0으로 바꾸는 것이 개선의 증거)
 
 ## 5. 환경 메모

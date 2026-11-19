@@ -2,6 +2,8 @@ package com.payment.payment.facade;
 
 import java.util.function.Supplier;
 
+import com.payment.common.util.JdbcTiming;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,11 +38,13 @@ final class PaymentSegmentTimer {
         if (recording == null) {
             return action.get();
         }
+        JdbcTiming.begin();
         long startedAt = System.nanoTime();
         try {
             return action.get();
         } finally {
-            recording.add(segment, System.nanoTime() - startedAt);
+            long elapsed = System.nanoTime() - startedAt;
+            recording.add(segment, elapsed, JdbcTiming.end());
         }
     }
 
@@ -73,8 +77,13 @@ final class PaymentSegmentTimer {
             this.startedAt = startedAt;
         }
 
-        private void add(String segment, long nanos) {
+        /** DB 구간이면 커넥션 대기와 COMMIT 시간을 괄호로 붙인다. 예: {@code complete=110.5ms(conn=90.1ms,commit=4.2ms)} */
+        private void add(String segment, long nanos, JdbcTiming.Snapshot jdbc) {
             segments.append(' ').append(segment).append('=').append(toMillis(nanos));
+            if (jdbc.connections() > 0) {
+                segments.append("(conn=").append(toMillis(jdbc.connectionWaitNanos()))
+                        .append(",commit=").append(toMillis(jdbc.commitNanos())).append(')');
+            }
             measuredNanos += nanos;
         }
 
