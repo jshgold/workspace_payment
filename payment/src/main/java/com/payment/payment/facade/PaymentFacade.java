@@ -45,7 +45,8 @@ public class PaymentFacade {
         if (paymentKey == null || paymentKey.isBlank()) {
             throw new IllegalArgumentException("결제 키는 필수입니다.");
         }
-        PaymentTarget target = paymentStateService.startPaying(orderId);
+        // [측정 전용] PaymentSegmentTimer.time은 구간 시간만 잰다. PaymentApprovalFacade가 기록을 시작하지 않았으면 그대로 실행한다.
+        PaymentTarget target = PaymentSegmentTimer.time("startPaying", () -> paymentStateService.startPaying(orderId));
 
         PgApproveResult approveResult = requestApproval(target, paymentKey);
 
@@ -61,10 +62,11 @@ public class PaymentFacade {
 
     private PgApproveResult requestApproval(PaymentTarget target, String paymentKey) {
         try {
-            return paymentClient.approve(new PgApproveRequest(target.orderNo(), paymentKey, target.amount()));
+            return PaymentSegmentTimer.time("pgApprove",
+                    () -> paymentClient.approve(new PgApproveRequest(target.orderNo(), paymentKey, target.amount())));
         } catch (PaymentDeclinedException | PaymentGatewayException e) {
             // 명확한 거절(또는 우리 연동 문제로 요청이 승인 단계에 가지 못함): 돈이 나가지 않았으므로 재시도할 수 있게 선점을 푼다.
-            paymentStateService.revertToPending(target.orderId());
+            PaymentSegmentTimer.time("revertToPending", () -> paymentStateService.revertToPending(target.orderId()));
             throw e;
         }
         // 타임아웃 등 그 외 예외는 승인 여부를 모른다. 되돌리면 승인된 결제를 놓칠 수 있어 PAYING을 유지한다.
@@ -72,7 +74,7 @@ public class PaymentFacade {
 
     private PaymentResponse complete(Long orderId, PgApproveResult approveResult) {
         try {
-            return paymentStateService.complete(orderId, approveResult);
+            return PaymentSegmentTimer.time("complete", () -> paymentStateService.complete(orderId, approveResult));
         } catch (DataIntegrityViolationException e) {
             // 이미 같은 주문의 결제가 기록된 경우일 수 있다. 정상 결제를 취소하면 안 되므로 PG 취소를 하지 않고 PAYING을 유지한다.
             log.error("결제 반영 중 무결성 위반. PG 취소 없이 확인 필요. orderId={}, pgTransactionId={}",
@@ -89,12 +91,12 @@ public class PaymentFacade {
     /** PG 승인을 취소하고, 취소가 성공한 경우에만 선점을 푼다. 취소가 실패하면 PAYING으로 남겨 추적할 수 있게 한다. */
     private void compensate(Long orderId, String pgTransactionId, String reason) {
         try {
-            paymentClient.cancel(pgTransactionId, reason);
+            PaymentSegmentTimer.time("pgCancel", () -> paymentClient.cancel(pgTransactionId, reason));
         } catch (PaymentCancelFailedException e) {
             log.error("보상 취소 실패. 돈이 묶여 있을 수 있어 PAYING을 유지한다. orderId={}, pgTransactionId={}",
                     orderId, pgTransactionId, e);
             throw e;
         }
-        paymentStateService.revertToPending(orderId);
+        PaymentSegmentTimer.time("revertToPending", () -> paymentStateService.revertToPending(orderId));
     }
 }

@@ -33,11 +33,25 @@ public class PaymentApprovalFacade {
     private final PaymentFacade paymentFacade;
 
     public PaymentResponse approve(Long orderId, String idempotencyKey, long requestedAmount, String paymentKey) {
-        Optional<PaymentResponse> replayed = idempotencyService.begin(idempotencyKey, orderId, requestedAmount);
-        if (replayed.isPresent()) {
-            return replayed.get();
+        // [측정 전용] 구간별 소요 시간 기록. 흐름에는 영향이 없다. (PaymentSegmentTimer)
+        PaymentSegmentTimer.start(orderId);
+        String result = "FAIL";
+        try {
+            Optional<PaymentResponse> replayed = PaymentSegmentTimer.time("begin",
+                    () -> idempotencyService.begin(idempotencyKey, orderId, requestedAmount));
+            if (replayed.isPresent()) {
+                result = "REPLAY";
+                return replayed.get();
+            }
+            PaymentResponse response = approveFirstRequest(orderId, idempotencyKey, paymentKey);
+            result = "OK";
+            return response;
+        } finally {
+            PaymentSegmentTimer.finish(result);
         }
+    }
 
+    private PaymentResponse approveFirstRequest(Long orderId, String idempotencyKey, String paymentKey) {
         try {
             PaymentResponse response = paymentFacade.approve(orderId, paymentKey);
             recordSuccess(idempotencyKey);
@@ -46,11 +60,11 @@ public class PaymentApprovalFacade {
             // 돈이 나갔는지 모른다. 확정 실패로 기록하지 않고 IN_PROGRESS로 남겨 재요청이 "처리 중"을 받게 한다.
             throw e;
         } catch (BusinessException e) {
-            idempotencyService.fail(idempotencyKey, e.getErrorCode());
+            PaymentSegmentTimer.time("fail", () -> idempotencyService.fail(idempotencyKey, e.getErrorCode()));
             throw e;
         } catch (IllegalStateException e) {
             // 주문 상태가 맞지 않거나 재고 부족처럼, 돈이 나가지 않은 것이 확정된 실패다.
-            idempotencyService.fail(idempotencyKey, ErrorCode.STATE_CONFLICT);
+            PaymentSegmentTimer.time("fail", () -> idempotencyService.fail(idempotencyKey, ErrorCode.STATE_CONFLICT));
             throw e;
         }
         // 그 밖의 예상 못 한 예외도 결과를 모르므로 IN_PROGRESS로 남긴다.
@@ -59,7 +73,7 @@ public class PaymentApprovalFacade {
     /** 결제는 이미 끝났으므로, 키 기록이 실패해도 사용자에게 실패로 응답하지 않고 로그로 남긴다. */
     private void recordSuccess(String idempotencyKey) {
         try {
-            idempotencyService.succeed(idempotencyKey);
+            PaymentSegmentTimer.time("succeed", () -> idempotencyService.succeed(idempotencyKey));
         } catch (RuntimeException e) {
             log.error("결제는 완료됐으나 멱등키 성공 기록에 실패했다. 재요청이 계속 '처리 중'을 받는다. key={}", idempotencyKey, e);
         }
