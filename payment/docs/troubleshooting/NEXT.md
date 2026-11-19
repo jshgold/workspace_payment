@@ -58,7 +58,7 @@
 - `complete`: 주문 `PAID` + `Payment` 저장만 한다. 상품 행을 건드리지 않는다.
 - `revertToPending`: 선점 해제 + 재고 복구. 원자적 쿼리 구현용으로 `ProductRepository.increaseStock` 벌크 UPDATE를 추가했다.
 - 가짜 PG에 `willApproveWithAmount(long)`를 추가했다. 승인 후 보상 경로를 재현하던 "complete에서 재고 부족"이 없어졌기 때문에, 금액 불일치로 같은 경로를 탄다.
-- JUnit: `stockContentionApprovesOnlyWinner()` (구 `stockContentionCausesApproveThenCancel()`) 두 구현 모두 PG 승인 1 / 취소 0. payment·product·order 패키지 테스트 247개 통과. **전체 테스트는 아직 돌리지 않았다.**
+- JUnit: `stockContentionApprovesOnlyWinner()` (구 `stockContentionCausesApproveThenCancel()`) 두 구현 모두 PG 승인 1 / 취소 0. payment·product·order 패키지 테스트 247개 통과. 전체 테스트(`./gradlew test`)도 사용자가 실행해 통과했고, PR로 `main`에 merge했다. (2026-11-20)
 - 바뀐 동작: PG 타임아웃·보상 취소 실패로 `PAYING`에 남은 주문은 재고를 쥐고 있다. (`pgTimeout`, `compensationFails` 기대 재고 3)
 
 **2026-11-19 A 후 k6 측정** (각 1회, PG 지연 300ms)
@@ -83,7 +83,7 @@
 **다음 후보 (결정은 사용자):**
 1. B. 트랜잭션 합치기 — 남은 병목(요청당 커넥션 대기 260ms대, 진 요청도 173ms)을 직접 줄인다. `payment-redesign-discussion.md`의 멱등키 위치 결정과 묶여 있다.
 2. 단건 `complete` 나머지 반복 측정 (작은 확인 작업)
-3. 전체 테스트(`./gradlew test`) 실행 후 커밋 — 아직 안 돌렸다.
+3. ~~전체 테스트(`./gradlew test`) 실행 후 커밋~~ — 완료 (2026-11-20, 사용자 실행·merge)
 
 ### 개선 방식 결정 때 정리한 내용
 
@@ -147,6 +147,6 @@ python3 -I k6/analyze_starvation.py <json 파일> <로그 파일>   # 상품 조
 ## 5. 환경 메모
 
 - pre-push hook이 `./gradlew test` 전체를 돌린다. 메인/테스트 코드를 바꿨으면 푸시 전에 관련 테스트를 넓게 돌릴 것.
-- 2026-11-19 세션에서 계측 코드(`PaymentSegmentTimer`, `JdbcTiming*`)를 추가했고, 결제 관련 단위·통합 테스트 48개가 통과했다. 사용자가 커밋했다. (`4156c7b`, `2f25076`) **전체 테스트는 아직 돌리지 않았다.** 푸시 전에 확인할 것.
+- 2026-11-19 세션에서 계측 코드(`PaymentSegmentTimer`, `JdbcTiming*`)를 추가했고, 결제 관련 단위·통합 테스트 48개가 통과했다. 사용자가 커밋했다. (`4156c7b`, `2f25076`) 이후 개선 A(`7c545d4`)까지 포함해 전체 테스트를 사용자가 실행해 통과했다. (2026-11-20)
 - 로컬 `payment` DB에 측정 데이터가 쌓여 있다: 상품 약 24개, 주문 약 5,400건(개선 A 측정분은 orderId 4136~5436). 전부 테스트 데이터이고, 사용자는 쌓이는 것을 신경 쓰지 않는다. 지울 때만 승인을 받는다.
 - 측정 원본 로그는 세션 임시 폴더에 있어 사라질 수 있다. 결과 수치는 문서에 모두 옮겨 두었다.
