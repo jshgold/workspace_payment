@@ -80,6 +80,8 @@
 
 ## 7. 구현 시 영향 범위 (확정 아님, 구현 전 상세 확인 예정)
 
+> 2026-11-20: 이 절은 논의 당시 초안이다. 최신 범위는 `.harness/phases/phase-04.md` 4-2+를 따른다. (예: `orders.status`는 `FAILED`뿐 아니라 `PAYMENT_UNKNOWN`, `EXPIRED`, `CANCEL_UNKNOWN`도 추가, `pg_transaction_id`가 `paymentKey`로 확인되면 NOT NULL 유지, 재고는 선차감)
+
 - **스키마:** 새 마이그레이션 V9로 변경한다. (V4/V5는 수정하지 않는다.)
   - `payment`에 `status`, `idempotency_key`(UNIQUE), `failure_code`, `paymentKey` 컬럼을 추가한다. 실패 건은 PG 거래 ID가 없으므로 `pg_transaction_id`의 NOT NULL 여부도 조정한다.
   - 기존 `payment` 행은 `APPROVED`로, `idempotency_key` 테이블 데이터는 `payment.idempotency_key`로 이관한다.
