@@ -20,16 +20,16 @@ import org.springframework.stereotype.Service;
 /**
  * 결제 승인 오케스트레이션. 이 클래스에는 {@code @Transactional}이 없다. (ARCHITECTURE 5-2: 선 외부 I/O → 후 DB 트랜잭션)
  * <pre>
- * 1. startPaying  (짧은 트랜잭션) 주문 선점 PENDING → PAYING
+ * 1. startPaying  (짧은 트랜잭션) 주문 선점 PENDING → PAYING + 재고 차감. 재고가 없으면 여기서 끝나 PG를 부르지 않는다
  * 2. PG 승인 호출  (트랜잭션 밖)   DB 커넥션을 쥐지 않는다
- * 3. complete     (짧은 트랜잭션) Order PAID + Payment 저장 + 재고 차감
- * 4. 3번 실패 시   PG 승인 취소(보상) 후 선점 해제
+ * 3. complete     (짧은 트랜잭션) Order PAID + Payment 저장
+ * 4. 3번 실패 시   PG 승인 취소(보상) 후 선점 해제 + 재고 복구
  * </pre>
  * 실패를 "돈이 나갔는지 아는가"로 나눠 처리한다.
  * <ul>
- *   <li>거절: 돈 안 나감 → PENDING으로 복구</li>
- *   <li>타임아웃·알 수 없는 예외: <b>모름</b> → PAYING 유지 (복구는 결제 조회/대사의 몫)</li>
- *   <li>승인 후 반영 실패: 돈 나감 → PG 취소, 취소가 성공해야만 PENDING으로 복구</li>
+ *   <li>거절: 돈 안 나감 → PENDING으로 복구, 재고 복구</li>
+ *   <li>타임아웃·알 수 없는 예외: <b>모름</b> → PAYING 유지, 재고도 쥔 채로 둔다 (복구는 결제 조회/대사의 몫)</li>
+ *   <li>승인 후 반영 실패: 돈 나감 → PG 취소, 취소가 성공해야만 PENDING으로 복구 + 재고 복구</li>
  * </ul>
  */
 @Slf4j

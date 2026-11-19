@@ -50,6 +50,27 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     int decreaseStockIfAvailable(@Param("id") Long id, @Param("quantity") int quantity);
 
     /**
+     * 조건부 Atomic Update로 재고를 복구한다. (Product.increaseStock 규칙을 SQL로 옮긴 것)
+     * <ul>
+     *   <li>품절(SOLD_OUT)이면 판매중(ON_SALE)으로 되돌리고, 판매중지(STOPPED)는 그대로 둔다.</li>
+     *   <li>삭제·판매중지 상품도 복구한다. 이미 차감한 재고를 되돌리는 일이라 상품 상태로 막지 않는다.</li>
+     * </ul>
+     *
+     * @return 영향받은 행 수. 0이면 없는 상품
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update Product p
+               set p.status = case when p.status = com.payment.product.domain.ProductStatus.SOLD_OUT
+                                   then com.payment.product.domain.ProductStatus.ON_SALE
+                                   else p.status end,
+                   p.stock = p.stock + :quantity,
+                   p.updatedAt = current_timestamp
+             where p.id = :id
+            """)
+    int increaseStock(@Param("id") Long id, @Param("quantity") int quantity);
+
+    /**
      * [락 없음 전략 전용] 읽은 값으로 계산한 재고·상태를 조건 없이 덮어쓴다. (blind write)
      * <ul>
      *   <li>벌크 UPDATE는 Hibernate의 {@code @Version} 검사를 거치지 않으므로, 락 없음 전략에서

@@ -10,6 +10,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import com.payment.common.exception.BusinessException;
+import com.payment.common.exception.ErrorCode;
 import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
@@ -98,7 +100,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("PG가 거절하면 주문은 PENDING으로 돌아가고 결제 기록과 재고 변화는 없다")
+    @DisplayName("PG가 거절하면 주문은 PENDING으로 돌아가고 결제 기록은 없으며, 선점 때 차감한 재고는 복구된다")
     void pgDeclined() {
         // given
         Product product = saveProduct(5);
@@ -114,7 +116,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("PG가 타임아웃이면 승인 여부를 모르므로 주문은 PAYING으로 남고 취소 호출도 없다")
+    @DisplayName("PG가 타임아웃이면 승인 여부를 모르므로 주문은 PAYING으로 남고, 선점 때 차감한 재고도 쥔 채로 남으며 취소 호출은 없다")
     void pgTimeout() {
         // given
         Product product = saveProduct(5);
@@ -125,13 +127,14 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
         assertThat(paymentRepository.count()).isZero();
-        assertThat(stock(product)).isEqualTo(5);
+        // 개선 A의 비용: 결과를 모르는 주문이 재고를 붙잡는다. 정리는 결제 조회·대사(4-4)의 몫이다.
+        assertThat(stock(product)).isEqualTo(3);
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
     }
 
     @Test
-    @DisplayName("승인 후 재고 부족으로 DB 반영이 실패하면 트랜잭션이 롤백되고 PG 승인이 취소되며 주문은 PENDING으로 돌아간다")
-    void dbFailureThenCompensate() {
+    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고 실패하며, 주문은 PENDING 그대로이고 재고와 결제 기록도 변하지 않는다")
+    void stockShortageFailsBeforePg() {
         // given: 주문 생성 이후 다른 주문이 재고를 가져가 결제 시점에는 재고가 모자란 상황
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
@@ -142,20 +145,39 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("재고가 부족");
-        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
-        assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
+        assertThat(fakePaymentClient.approveCallCount()).isZero();
+        assertThat(fakePaymentClient.cancelCallCount()).isZero();
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
         assertThat(paymentRepository.count()).isZero();
         assertThat(stock(product)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("DB 반영 실패 후 보상 취소마저 실패하면 주문은 PAYING으로 남아 추적할 수 있다")
+    @DisplayName("PG 승인 후 금액 불일치로 보상 취소하면 PG 승인이 취소되고, 주문은 PENDING으로 돌아가며 재고는 복구된다")
+    void amountMismatchThenCompensate() {
+        // given
+        Product product = saveProduct(5);
+        Order order = saveOrder(product, 2);
+        fakePaymentClient.willApproveWithAmount(1L);
+
+        // when // then
+        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_AMOUNT_MISMATCH));
+        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
+        assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
+        assertThat(paymentRepository.count()).isZero();
+        assertThat(stock(product)).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("PG 승인 후 보상 취소마저 실패하면 주문은 PAYING으로 남아 추적할 수 있고, 돈이 묶였을 수 있으므로 재고도 복구하지 않는다")
     void compensationFails() {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        setStock(product, 1);
+        fakePaymentClient.willApproveWithAmount(1L);
         fakePaymentClient.willFailCancel();
 
         // when // then
@@ -163,6 +185,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
                 .isInstanceOf(PaymentCancelFailedException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
         assertThat(paymentRepository.count()).isZero();
+        assertThat(stock(product)).isEqualTo(3);
     }
 
     @Test
@@ -198,14 +221,14 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
     }
 
     /**
-     * [트러블슈팅 재현] docs/troubleshooting/payment-stock-deduction-timing.md
-     * 재고를 PG 승인 뒤에 차감하므로, 재고 경합에서 질 주문도 전부 PG 승인까지 가고 그 뒤 보상 취소된다.
-     * 이 테스트는 <b>현재 구조의 문제를 고정</b>한다. 재고 차감을 PG 호출 앞으로 옮기면 PG 호출 횟수 단언이 깨지는 것이 개선의 증거다.
+     * [트러블슈팅 개선 A 검증] docs/troubleshooting/payment-stock-deduction-timing.md
+     * 개선 전: 재고를 PG 승인 뒤에 차감해서, 진 주문도 전부 PG 승인까지 가고 그 뒤 보상 취소됐다. (PG 승인 N, 취소 N-1)
+     * 개선 후: 재고를 선점(startPaying)에서 차감하므로, 진 주문은 PG를 부르기 전에 실패한다. (PG 승인 1, 취소 0)
      */
     @Test
     @Tag("concurrency")
-    @DisplayName("재고 1개 상품에 서로 다른 주문 10건이 동시에 결제하면 1건만 성공하지만, PG 승인은 10번 모두 일어나고 진 9건은 승인 후 취소된다")
-    void stockContentionCausesApproveThenCancel() throws InterruptedException {
+    @DisplayName("재고 1개 상품에 서로 다른 주문 10건이 동시에 결제하면 1건만 성공하고, PG 승인은 이긴 1건만 일어나며 취소는 없다")
+    void stockContentionApprovesOnlyWinner() throws InterruptedException {
         // given
         int initialStock = 1;
         Product product = saveProduct(initialStock);
@@ -234,11 +257,11 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         assertThat(succeeded * 1 + stock(product)).isEqualTo(initialStock);
         assertThat(paymentRepository.count()).isEqualTo(1);
 
-        // 문제의 증거: 진 주문도 PG 승인까지 갔고, 그만큼 보상 취소가 일어났다.
-        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(CONTENDING_ORDERS);
-        assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(CONTENDING_ORDERS - 1);
+        // 개선의 증거: 진 주문은 PG까지 가지 않았다. (개선 전: 승인 10, 취소 9)
+        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
+        assertThat(fakePaymentClient.cancelCallCount()).isZero();
 
-        // 진 주문은 승인 → 취소를 거쳐 PENDING으로 돌아왔다. (재고 0인데도 다시 결제를 시도할 수 있다)
+        // 진 주문은 선점이 롤백되어 PENDING 그대로다.
         long paid = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PAID).count();
         long pending = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PENDING).count();
         assertThat(paid).isEqualTo(1);

@@ -43,3 +43,5 @@ out/
 application-secret.yml
 *.pem
 *credentials*
+NEXT*
+payment-stock-before-pg-result.md
