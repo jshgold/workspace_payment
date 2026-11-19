@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
  *   <li>{@link #willApprove()} / {@link #willDecline(String)} / {@link #willTimeout()}: 다음 승인 호출의 결과</li>
  *   <li>{@link #delay(Duration)}: 응답 지연. 승인·취소 모두에 적용된다. (DB 커넥션 점유 실험용)</li>
  *   <li>{@link #willFailCancel()}: 취소 호출이 실패하는 시나리오 (보상 작업 실패)</li>
+ *   <li>{@link #willApproveWithAmount(long)}: 요청과 다른 금액으로 승인 (승인 후 보상 취소 경로 재현)</li>
  *   <li>{@link #approveCallCount()}: PG가 실제로 몇 번 호출됐는지. 멱등성 검증(3-4)의 핵심 증거</li>
  * </ul>
  * 동시성 테스트에서 여러 스레드가 호출하므로 상태는 스레드 안전하게 관리한다.
@@ -45,6 +46,7 @@ public class FakePaymentClient implements PaymentClient {
     private volatile String declineReason = "한도 초과";
     private volatile Duration delay;
     private volatile boolean cancelFails = false;
+    private volatile Long approvedAmountOverride = null;
 
     private final AtomicInteger approveCalls = new AtomicInteger();
     private final AtomicInteger cancelCalls = new AtomicInteger();
@@ -87,6 +89,12 @@ public class FakePaymentClient implements PaymentClient {
         this.scenario = Scenario.TIMEOUT;
     }
 
+    /** 승인은 하되 요청과 다른 금액으로 승인한다. PG 승인 후 보상 취소 경로를 재현하는 데 쓴다. */
+    public void willApproveWithAmount(long approvedAmount) {
+        this.approvedAmountOverride = approvedAmount;
+        this.scenario = Scenario.APPROVE;
+    }
+
     public void delay(Duration delay) {
         this.delay = delay;
     }
@@ -112,6 +120,7 @@ public class FakePaymentClient implements PaymentClient {
         this.declineReason = "한도 초과";
         this.delay = initialDelay;
         this.cancelFails = false;
+        this.approvedAmountOverride = null;
         approveCalls.set(0);
         cancelCalls.set(0);
         canceledTransactionIds.clear();
@@ -122,7 +131,8 @@ public class FakePaymentClient implements PaymentClient {
         approveCalls.incrementAndGet();
         simulateLatency();
         return switch (scenario) {
-            case APPROVE -> new PgApproveResult("fake-" + UUID.randomUUID(), request.amount());
+            case APPROVE -> new PgApproveResult("fake-" + UUID.randomUUID(),
+                    approvedAmountOverride != null ? approvedAmountOverride : request.amount());
             case DECLINE -> throw new PaymentDeclinedException(declineReason);
             case TIMEOUT -> throw new PaymentTimeoutException();
         };

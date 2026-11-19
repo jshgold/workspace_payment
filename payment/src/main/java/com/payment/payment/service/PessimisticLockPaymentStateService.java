@@ -26,7 +26,8 @@ import org.springframework.transaction.annotation.Transactional;
  * 주문과 상품 행을 {@code SELECT ... FOR UPDATE}로 잠그고 도메인 메서드로 상태를 바꾼다.
  * <p>
  * 잠그는 순서는 항상 <b>orders → product</b>다. 다른 경로(결제 취소 등)도 같은 순서를 지켜야 데드락이 나지 않는다.
- * 재고 행 락은 트랜잭션 맨 끝에서 잡아 락을 쥐는 시간을 줄인다.
+ * 재고는 PG 호출 전({@code startPaying})에 차감하고, 결제가 무산되면 {@code revertToPending}에서 복구한다.
+ * 재고 행 락은 각 트랜잭션 맨 끝에서 잡아 락을 쥐는 시간을 줄인다.
  */
 @Primary
 @Service
@@ -38,11 +39,18 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
     private final PaymentRepository paymentRepository;
     private final ApplicationEventPublisher eventPublisher;
 
+    /**
+     * 주문 선점과 재고 차감을 한 트랜잭션에서 한다. 재고가 모자라면 예외로 선점까지 롤백되어 PG를 부르지 않는다.
+     * (트러블슈팅 개선 A: docs/troubleshooting/payment-stock-deduction-timing.md)
+     */
     @Override
     @Transactional
     public PaymentTarget startPaying(Long orderId) {
         Order order = findOrderForUpdate(orderId);
         order.startPaying();
+
+        findProductForUpdate(order.getProductId()).decreaseStock(order.getQuantity());
+
         return new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
     }
 
@@ -58,25 +66,31 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
             return PaymentResponse.of(order, existing);
         }
 
+        // 재고는 startPaying에서 이미 차감했다. 여기서는 상품 행을 잠그지 않는다.
         order.markPaid();
         Payment payment = paymentRepository.save(
                 Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
 
-        // 발행은 재고 차감 전에 한다. 처리는 커밋 뒤(AFTER_COMMIT)라서, 아래에서 재고 부족으로 롤백되면 이벤트는 버려진다.
+        // 처리는 커밋 뒤(AFTER_COMMIT)라서, 이 트랜잭션이 롤백되면 이벤트는 버려진다.
         eventPublisher.publishEvent(new PaymentCompletedEvent(
                 orderId, payment.getId(), payment.getPgTransactionId(), payment.getAmount()));
-
-        Product product = productRepository.findByIdForUpdate(order.getProductId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
-        product.decreaseStock(order.getQuantity());
 
         return PaymentResponse.of(order, payment);
     }
 
+    /** 선점을 풀고 startPaying에서 차감한 재고를 되돌린다. 잠그는 순서는 startPaying과 같이 orders → product다. */
     @Override
     @Transactional
     public void revertToPending(Long orderId) {
-        findOrderForUpdate(orderId).revertToPending();
+        Order order = findOrderForUpdate(orderId);
+        order.revertToPending();
+
+        findProductForUpdate(order.getProductId()).increaseStock(order.getQuantity());
+    }
+
+    private Product findProductForUpdate(Long productId) {
+        return productRepository.findByIdForUpdate(productId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));
     }
 
     private Order findOrderForUpdate(Long orderId) {

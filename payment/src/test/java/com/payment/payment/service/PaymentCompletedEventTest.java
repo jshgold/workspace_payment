@@ -34,6 +34,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 결제 완료 이벤트(3-6)를 실제 MySQL로 검증한다. 후처리(PaymentNotifier)만 목으로 바꿔 호출 여부와 스레드를 본다.
@@ -65,6 +66,9 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
 
     @Autowired
     private AtomicUpdatePaymentStateService atomicStateService;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
 
     @BeforeEach
     void setUp() {
@@ -107,9 +111,32 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
 
     @ParameterizedTest
     @EnumSource(Strategy.class)
-    @DisplayName("결제 트랜잭션이 롤백되면(재고 부족) 후처리는 실행되지 않고, 주문과 결제 기록도 남지 않는다")
+    @DisplayName("결과 반영(complete) 트랜잭션이 이벤트 발행 뒤 롤백되면 후처리는 실행되지 않고, 주문은 PAYING 그대로이며 결제 기록도 남지 않는다")
     void notHandledWhenTransactionRollsBack(Strategy strategy) {
-        // given: 주문 생성 시점에는 재고가 충분했지만, 결제 반영 전에 재고가 줄어든 상황
+        // given: 재고 차감이 startPaying으로 옮겨져 complete가 재고 부족으로 실패하는 경로는 없다.
+        // 그래서 바깥 트랜잭션에 참여시킨 뒤 롤백 표시를 해, "발행은 됐지만 커밋되지 않은" 상황을 직접 만든다.
+        Product product = saveProduct(5);
+        Order order = saveOrder(product, 3);
+        PaymentStateService stateService = stateService(strategy);
+        stateService.startPaying(order.getId());
+
+        // when
+        transactionTemplate.executeWithoutResult(status -> {
+            stateService.complete(order.getId(), new PgApproveResult("pg-tx-rollback", 3 * PRICE));
+            status.setRollbackOnly();
+        });
+
+        // then
+        verify(paymentNotifier, after(500).never()).notifyPaid(any());
+        assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.PAYING);
+        assertThat(paymentRepository.findByOrderId(order.getId())).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Strategy.class)
+    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고 실패하며, 후처리도 실행되지 않고 주문은 PENDING 그대로다")
+    void notHandledWhenStockShortage(Strategy strategy) {
+        // given: 주문 생성 시점에는 재고가 충분했지만, 결제 전에 재고가 줄어든 상황
         Product product = saveProduct(5);
         Order order = saveOrder(product, 3);
         drainStock(product, 4);
@@ -120,7 +147,8 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         verify(paymentNotifier, after(500).never()).notifyPaid(any());
         assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.PENDING);
         assertThat(paymentRepository.findByOrderId(order.getId())).isEmpty();
-        assertThat(fakePaymentClient.cancelCallCount()).as("보상 PG 취소는 호출된다").isEqualTo(1);
+        assertThat(fakePaymentClient.approveCallCount()).as("PG 승인은 호출되지 않는다").isZero();
+        assertThat(fakePaymentClient.cancelCallCount()).isZero();
     }
 
     @Test
@@ -142,11 +170,14 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
     }
 
     private PaymentFacade facade(Strategy strategy) {
-        PaymentStateService stateService = switch (strategy) {
+        return new PaymentFacade(stateService(strategy), fakePaymentClient);
+    }
+
+    private PaymentStateService stateService(Strategy strategy) {
+        return switch (strategy) {
             case PESSIMISTIC_LOCK -> pessimisticStateService;
             case ATOMIC_UPDATE -> atomicStateService;
         };
-        return new PaymentFacade(stateService, fakePaymentClient);
     }
 
     private Product saveProduct(int stock) {

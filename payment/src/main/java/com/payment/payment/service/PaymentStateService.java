@@ -14,18 +14,22 @@ import com.payment.payment.dto.PaymentResponse;
 public interface PaymentStateService {
 
     /**
-     * PENDING → PAYING으로 주문을 선점한다. 선점에 성공한 요청만 PG를 호출할 수 있다.
+     * PENDING → PAYING으로 주문을 선점하고, 같은 트랜잭션에서 재고를 차감한다.
+     * 선점과 재고 차감에 모두 성공한 요청만 PG를 호출할 수 있다. 재고가 모자라면 선점도 롤백된다.
      *
-     * @throws IllegalStateException 이미 결제가 진행 중이거나 끝난 주문
+     * @throws IllegalStateException 이미 결제가 진행 중이거나 끝난 주문 (비관적 락 구현은 재고 부족도 이 예외)
      */
     PaymentTarget startPaying(Long orderId);
 
     /**
-     * PG 승인 결과를 반영한다. 한 트랜잭션에서 Order PAID, Payment 저장, 재고 차감을 함께 처리한다.
+     * PG 승인 결과를 반영한다. 한 트랜잭션에서 Order PAID와 Payment 저장을 처리한다. (재고는 startPaying에서 차감됨)
      * 이미 PAID인 주문이면(중복 메시지) 예외 없이 기존 결제 결과를 돌려준다.
      */
     PaymentResponse complete(Long orderId, PgApproveResult approveResult);
 
-    /** PAYING → PENDING. 돈이 나가지 않았거나 이미 환불된 것이 확실할 때만 호출한다. */
+    /**
+     * PAYING → PENDING과 재고 복구. 돈이 나가지 않았거나 이미 환불된 것이 확실할 때만 호출한다.
+     * 타임아웃처럼 결과를 모르면 호출하지 않으므로, 그 주문은 재고를 쥔 채 PAYING으로 남는다. (결제 조회·대사의 몫)
+     */
     void revertToPending(Long orderId);
 }

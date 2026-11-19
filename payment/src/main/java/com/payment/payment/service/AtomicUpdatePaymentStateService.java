@@ -20,10 +20,12 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * [원자적 쿼리 구현] 조건부 UPDATE 한 문장이 관문이 된다. 행을 읽어서 판단하지 않고 DB가 확인과 변경을 한 번에 한다.
  * <ul>
- *   <li>선점: {@code UPDATE orders SET status='PAYING' WHERE id=? AND status='PENDING'} — 0행이면 선점 실패</li>
- *   <li>반영: 같은 방식으로 PAYING → PAID를 먼저 통과한 요청만 Payment INSERT와 재고 차감으로 진행한다.
+ *   <li>선점: {@code UPDATE orders SET status='PAYING' WHERE id=? AND status='PENDING'} — 0행이면 선점 실패.
+ *       이어서 조건부 UPDATE로 재고를 차감하고, 0행이면 선점까지 롤백한다. (PG 호출 전에 재고 판정)</li>
+ *   <li>반영: 같은 방식으로 PAYING → PAID를 먼저 통과한 요청만 Payment INSERT로 진행한다.
  *       중복 메시지는 0행이라 INSERT까지 가지 않으므로 UNIQUE 위반 예외로 걸러지지 않는다.</li>
- *   <li>재고 차감은 트랜잭션 맨 끝에 둔다. UPDATE가 잡은 재고 행 락은 커밋까지 유지되므로 보유 시간을 줄이기 위해서다.</li>
+ *   <li>되돌리기: PAYING → PENDING과 재고 복구를 한 트랜잭션에서 한다.</li>
+ *   <li>재고 UPDATE는 트랜잭션 맨 끝에 둔다. UPDATE가 잡은 재고 행 락은 커밋까지 유지되므로 보유 시간을 줄이기 위해서다.</li>
  * </ul>
  * 비관적 락 구현({@link PessimisticLockPaymentStateService})과 달리 상태 규칙이 SQL에 한 번 더 들어간다.
  */
@@ -44,7 +46,16 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
             throw rejection(orderId, "결제를 시작할 수 없는 주문 상태입니다.");
         }
         Order order = findOrder(orderId);
-        return new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
+        // 아래 벌크 UPDATE가 영속성 컨텍스트를 비우므로, 필요한 값은 그 전에 꺼내 둔다.
+        PaymentTarget target = new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
+
+        // 주문 선점과 재고 차감을 한 트랜잭션에서 한다. 재고가 모자라면 선점까지 롤백되어 PG를 부르지 않는다.
+        // (트러블슈팅 개선 A: docs/troubleshooting/payment-stock-deduction-timing.md)
+        int decreased = productRepository.decreaseStockIfAvailable(order.getProductId(), order.getQuantity());
+        if (decreased == 0) {
+            throw new BusinessException(ErrorCode.STOCK_NOT_AVAILABLE);
+        }
+        return target;
     }
 
     @Override
@@ -55,30 +66,30 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
             return alreadyCompletedOrReject(orderId);
         }
 
+        // 재고는 startPaying에서 이미 차감했다. 여기서는 상품 행을 건드리지 않는다.
         Order order = findOrder(orderId);
         Payment payment = paymentRepository.save(
                 Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
-        // 아래 벌크 UPDATE가 영속성 컨텍스트를 비우므로, 응답은 그 전에 만든다.
-        PaymentResponse response = PaymentResponse.of(order, payment);
 
-        // 발행은 재고 차감 전에 한다. 처리는 커밋 뒤(AFTER_COMMIT)라서, 아래에서 재고 부족으로 롤백되면 이벤트는 버려진다.
+        // 처리는 커밋 뒤(AFTER_COMMIT)라서, 이 트랜잭션이 롤백되면 이벤트는 버려진다.
         eventPublisher.publishEvent(new PaymentCompletedEvent(
                 orderId, payment.getId(), payment.getPgTransactionId(), payment.getAmount()));
 
-        int decreased = productRepository.decreaseStockIfAvailable(order.getProductId(), order.getQuantity());
-        if (decreased == 0) {
-            // 예외로 트랜잭션 전체를 롤백한다. 앞에서 바꾼 주문 상태와 저장한 결제 기록도 함께 되돌아간다.
-            throw new BusinessException(ErrorCode.STOCK_NOT_AVAILABLE);
-        }
-        return response;
+        return PaymentResponse.of(order, payment);
     }
 
+    /** 선점을 풀고 startPaying에서 차감한 재고를 되돌린다. 잠그는 순서는 startPaying과 같이 orders → product다. */
     @Override
     @Transactional
     public void revertToPending(Long orderId) {
         int updated = orderRepository.transitionStatus(orderId, OrderStatus.PAYING, OrderStatus.PENDING);
         if (updated == 0) {
             throw rejection(orderId, "결제 대기로 되돌릴 수 없는 주문 상태입니다.");
+        }
+        Order order = findOrder(orderId);
+        int restored = productRepository.increaseStock(order.getProductId(), order.getQuantity());
+        if (restored == 0) {
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_FOUND);
         }
     }
 
