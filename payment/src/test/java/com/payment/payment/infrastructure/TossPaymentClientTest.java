@@ -8,7 +8,9 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+import java.net.ConnectException;
 import java.net.SocketTimeoutException;
+import java.net.http.HttpConnectTimeoutException;
 
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
@@ -206,7 +208,33 @@ class TossPaymentClientTest {
     }
 
     @Test
-    @DisplayName("네트워크 오류(타임아웃 포함)는 요청이 닿았는지 모르므로 PaymentTimeoutException이다")
+    @DisplayName("연결 거부는 요청이 PG에 닿지 않은 것이 확실하므로 결과 모름이 아니라 연동 오류(PaymentGatewayException)다")
+    void connectionRefusedIsGatewayError() {
+        // given
+        server.expect(requestTo(CONFIRM_URL)).andRespond(httpRequest -> {
+            throw new ConnectException("Connection refused");
+        });
+
+        // when // then
+        assertThatThrownBy(() -> client.approve(request()))
+                .isInstanceOf(PaymentGatewayException.class)
+                .hasMessageContaining(TossPaymentClient.CONNECTION_FAILED);
+    }
+
+    @Test
+    @DisplayName("연결 타임아웃은 연결이 맺어지기 전이라 요청이 나가지 않았으므로 연동 오류(PaymentGatewayException)다")
+    void connectTimeoutIsGatewayError() {
+        // given
+        server.expect(requestTo(CONFIRM_URL)).andRespond(httpRequest -> {
+            throw new HttpConnectTimeoutException("HTTP connect timed out");
+        });
+
+        // when // then
+        assertThatThrownBy(() -> client.approve(request())).isInstanceOf(PaymentGatewayException.class);
+    }
+
+    @Test
+    @DisplayName("읽기 타임아웃은 요청이 닿았는지 모르므로 PaymentTimeoutException이다")
     void networkErrorIsUnknown() {
         // given
         server.expect(requestTo(CONFIRM_URL)).andRespond(httpRequest -> {

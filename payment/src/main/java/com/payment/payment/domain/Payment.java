@@ -2,8 +2,12 @@ package com.payment.payment.domain;
 
 import java.time.LocalDateTime;
 
+import com.payment.common.exception.ErrorCode;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -14,23 +18,31 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 /**
- * PG 승인이 끝난 결제 기록. Order와 1:1이다.
- * 같은 주문에 결제 기록이 둘 생기는 것은 {@code order_id} UNIQUE가 DB 수준에서 마지막으로 막는다.
- * (앱 쪽 방어선은 주문 상태 선점이고, 이 제약은 그게 뚫렸을 때를 위한 안전망이다.)
+ * 결제 시도 기록. 승인 결과가 아니라 "무엇을 시도했고 어떻게 끝났는가"를 남긴다. (phase-04 4-2+)
+ * <ul>
+ *   <li>PG를 호출하기 <b>전에</b> {@code REQUESTED}로 생성한다. 그래야 타임아웃처럼 결과를 모르는 경우에도
+ *       어떤 {@code paymentKey}로 얼마를 시도했는지가 남는다.</li>
+ *   <li>PG를 부르기 전에 거절한 시도(재고 부족, 요청 금액 불일치)는 처음부터 {@code FAILED}로 생성한다.</li>
+ *   <li>Order와 1:1이다. 재시도는 새 주문으로 하므로 한 주문에 결제 시도는 하나뿐이다. ({@code order_id} UNIQUE)</li>
+ *   <li>멱등키도 이 행에 둔다. 키 선점과 시도 기록이 같은 INSERT라 한 트랜잭션으로 묶인다. ({@code idempotency_key} UNIQUE)</li>
+ * </ul>
  */
 @Entity
 @Table(name = "payment", uniqueConstraints = {
         @UniqueConstraint(name = "uk_payment_order_id", columnNames = {"order_id"}),
-        @UniqueConstraint(name = "uk_payment_pg_transaction_id", columnNames = {"pg_transaction_id"})
+        @UniqueConstraint(name = "uk_payment_payment_key", columnNames = {"payment_key"}),
+        @UniqueConstraint(name = "uk_payment_idempotency_key", columnNames = {"idempotency_key"})
 })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Payment {
 
     /** 토스 paymentKey 최대 길이(200자)에 맞춘다. PG가 식별자 길이를 늘릴 수 있어 여유를 두지 않는다. */
-    private static final int PG_TRANSACTION_ID_MAX_LENGTH = 200;
+    public static final int PAYMENT_KEY_MAX_LENGTH = 200;
+    public static final int IDEMPOTENCY_KEY_MAX_LENGTH = 100;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -39,41 +51,146 @@ public class Payment {
     @Column(name = "order_id", nullable = false)
     private Long orderId;
 
-    @Column(name = "pg_transaction_id", nullable = false, length = PG_TRANSACTION_ID_MAX_LENGTH)
-    private String pgTransactionId;
+    /** 결제창 인증 후 PG가 발급한 결제 식별자. 승인·취소·조회에 쓴다. 클라이언트가 승인 요청에 담아 보낸다. */
+    @Column(name = "payment_key", nullable = false, length = PAYMENT_KEY_MAX_LENGTH)
+    private String paymentKey;
 
-    /** PG가 실제로 승인한 금액. 서버 계산 금액과 일치함을 확인한 뒤에만 기록한다. */
+    /** 클라이언트가 보낸 멱등키. 같은 키의 재요청에 이 행의 결과를 돌려준다. */
+    @Column(name = "idempotency_key", nullable = false, length = IDEMPOTENCY_KEY_MAX_LENGTH)
+    private String idempotencyKey;
+
+    /** 서버가 주문에서 계산한 요청 금액. 클라이언트 값이 아니다. */
     @Column(nullable = false)
     private long amount;
+
+    /** PG가 실제로 승인한 금액. 승인 응답을 받았을 때만 채운다. (금액 불일치·보상 실패 건의 사후 확인용) */
+    @Column(name = "approved_amount")
+    private Long approvedAmount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private PaymentStatus status;
+
+    /** 실패·결과 모름의 사유. {@link ErrorCode} 이름을 저장한다. 같은 키의 재요청에 같은 에러를 돌려줄 때 쓴다. */
+    @Column(name = "failure_code", length = 50)
+    private String failureCode;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
     @Builder(access = AccessLevel.PRIVATE)
-    private Payment(Long orderId, String pgTransactionId, long amount) {
+    private Payment(Long orderId, String paymentKey, String idempotencyKey, long amount,
+                    PaymentStatus status, String failureCode) {
         this.orderId = orderId;
-        this.pgTransactionId = pgTransactionId;
+        this.paymentKey = paymentKey;
+        this.idempotencyKey = idempotencyKey;
         this.amount = amount;
+        this.status = status;
+        this.failureCode = failureCode;
     }
 
-    public static Payment create(Long orderId, String pgTransactionId, long amount) {
+    /** PG 승인을 호출하기 직전의 시도 기록. */
+    public static Payment request(Long orderId, String idempotencyKey, String paymentKey, long amount) {
+        validate(orderId, idempotencyKey, paymentKey, amount);
+        return Payment.builder()
+                .orderId(orderId)
+                .idempotencyKey(idempotencyKey)
+                .paymentKey(paymentKey)
+                .amount(amount)
+                .status(PaymentStatus.REQUESTED)
+                .build();
+    }
+
+    /** PG를 부르기 전에 거절한 시도 기록. (재고 부족, 요청 금액 불일치) */
+    public static Payment rejected(Long orderId, String idempotencyKey, String paymentKey, long amount,
+                                   ErrorCode failureCode) {
+        validate(orderId, idempotencyKey, paymentKey, amount);
+        if (failureCode == null) {
+            throw new IllegalArgumentException("실패 코드는 필수입니다.");
+        }
+        return Payment.builder()
+                .orderId(orderId)
+                .idempotencyKey(idempotencyKey)
+                .paymentKey(paymentKey)
+                .amount(amount)
+                .status(PaymentStatus.FAILED)
+                .failureCode(failureCode.name())
+                .build();
+    }
+
+    public void approve(long approvedAmount) {
+        assertStatus(PaymentStatus.REQUESTED, "승인 처리할 수 없는 결제 상태입니다.");
+        this.status = PaymentStatus.APPROVED;
+        this.approvedAmount = approvedAmount;
+    }
+
+    /**
+     * 돈이 나가지 않았음이 확정된 실패. PG가 승인했다가 보상 취소한 경우에는 승인 금액도 남긴다.
+     *
+     * @param approvedAmount PG 승인 응답을 받았으면 그 금액, 받지 못했으면 null
+     */
+    public void fail(ErrorCode failureCode, Long approvedAmount) {
+        assertStatus(PaymentStatus.REQUESTED, "실패 처리할 수 없는 결제 상태입니다.");
+        if (failureCode == null) {
+            throw new IllegalArgumentException("실패 코드는 필수입니다.");
+        }
+        this.status = PaymentStatus.FAILED;
+        this.failureCode = failureCode.name();
+        this.approvedAmount = approvedAmount;
+    }
+
+    /**
+     * 승인 여부를 모른다. 대사로 확정한다.
+     *
+     * @param reason         사유가 따로 있으면 그 코드(보상 취소 실패 등), 단순 타임아웃이면 null
+     * @param approvedAmount PG 승인 응답을 받았으면 그 금액, 받지 못했으면 null
+     */
+    public void markUnknown(ErrorCode reason, Long approvedAmount) {
+        assertStatus(PaymentStatus.REQUESTED, "결과 모름으로 바꿀 수 없는 결제 상태입니다.");
+        this.status = PaymentStatus.UNKNOWN;
+        this.failureCode = reason == null ? null : reason.name();
+        this.approvedAmount = approvedAmount;
+    }
+
+    /** 승인된 결제의 취소가 확정됐다. */
+    public void cancel() {
+        assertStatus(PaymentStatus.APPROVED, "취소 처리할 수 없는 결제 상태입니다.");
+        this.status = PaymentStatus.CANCELED;
+    }
+
+    public boolean belongsTo(Long orderId) {
+        return this.orderId.equals(orderId);
+    }
+
+    private static void validate(Long orderId, String idempotencyKey, String paymentKey, long amount) {
         if (orderId == null) {
             throw new IllegalArgumentException("주문 ID는 필수입니다.");
         }
-        if (pgTransactionId == null || pgTransactionId.isBlank()) {
-            throw new IllegalArgumentException("PG 거래 ID는 필수입니다.");
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IllegalArgumentException("멱등키는 필수입니다.");
         }
-        if (pgTransactionId.length() > PG_TRANSACTION_ID_MAX_LENGTH) {
-            throw new IllegalArgumentException("PG 거래 ID는 " + PG_TRANSACTION_ID_MAX_LENGTH + "자 이하여야 합니다.");
+        if (idempotencyKey.length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            throw new IllegalArgumentException("멱등키는 " + IDEMPOTENCY_KEY_MAX_LENGTH + "자 이하여야 합니다.");
+        }
+        if (paymentKey == null || paymentKey.isBlank()) {
+            throw new IllegalArgumentException("결제 키는 필수입니다.");
+        }
+        if (paymentKey.length() > PAYMENT_KEY_MAX_LENGTH) {
+            throw new IllegalArgumentException("결제 키는 " + PAYMENT_KEY_MAX_LENGTH + "자 이하여야 합니다.");
         }
         if (amount <= 0) {
             throw new IllegalArgumentException("결제 금액은 0보다 커야 합니다.");
         }
-        return Payment.builder()
-                .orderId(orderId)
-                .pgTransactionId(pgTransactionId)
-                .amount(amount)
-                .build();
+    }
+
+    private void assertStatus(PaymentStatus expected, String message) {
+        if (this.status != expected) {
+            throw new IllegalStateException(message + " 현재 상태: " + this.status);
+        }
     }
 }

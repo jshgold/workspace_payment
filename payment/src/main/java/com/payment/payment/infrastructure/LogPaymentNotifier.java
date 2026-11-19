@@ -12,7 +12,7 @@ public class LogPaymentNotifier implements PaymentNotifier {
 
     @Override
     public void notifyPaid(PaymentCompletedEvent event) {
-        log.info("[결제 완료 알림] orderId={}, paymentId={}, pgTransactionId={}, amount={}",
-                event.orderId(), event.paymentId(), event.pgTransactionId(), event.amount());
+        log.info("[결제 완료 알림] orderId={}, paymentId={}, paymentKey={}, amount={}",
+                event.orderId(), event.paymentId(), event.paymentKey(), event.amount());
     }
 }

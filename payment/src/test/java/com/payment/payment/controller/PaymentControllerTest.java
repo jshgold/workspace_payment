@@ -14,8 +14,9 @@ import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
 import com.payment.common.exception.GlobalExceptionHandler;
 import com.payment.order.domain.OrderStatus;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.dto.PaymentResponse;
-import com.payment.payment.facade.PaymentApprovalFacade;
+import com.payment.payment.facade.PaymentFacade;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,14 +40,14 @@ class PaymentControllerTest {
     MockMvc mockMvc;
 
     @MockitoBean
-    PaymentApprovalFacade paymentApprovalFacade;
+    PaymentFacade paymentFacade;
 
     @Test
     @DisplayName("올바른 요청이면 200과 결제 결과를 응답하고 헤더의 키와 본문의 금액을 Facade에 넘긴다")
     void approveSuccess() throws Exception {
         // given
-        given(paymentApprovalFacade.approve(1L, "key-1", 20_000L, "payment-key-1"))
-                .willReturn(new PaymentResponse(1L, 10L, "pg-tx-1", 20_000L, OrderStatus.PAID));
+        given(paymentFacade.approve(1L, "key-1", 20_000L, "payment-key-1"))
+                .willReturn(new PaymentResponse(1L, 10L, "payment-key-1", 20_000L, OrderStatus.PAID, PaymentStatus.APPROVED));
 
         // when // then
         mockMvc.perform(post(URL)
@@ -66,7 +67,7 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
+        verify(paymentFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -83,7 +84,7 @@ class PaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
+        verify(paymentFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -102,7 +103,7 @@ class PaymentControllerTest {
                                 {"amount": 0}
                                 """))
                 .andExpect(status().isBadRequest());
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
+        verify(paymentFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
@@ -125,14 +126,14 @@ class PaymentControllerTest {
                             .content(body))
                     .andExpect(status().isBadRequest());
         }
-        verify(paymentApprovalFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
+        verify(paymentFacade, never()).approve(anyLong(), anyString(), anyLong(), anyString());
     }
 
     @Test
     @DisplayName("같은 키의 첫 요청이 처리 중이면 409와 PAYMENT_IN_PROGRESS 코드를 응답한다")
     void inProgress() throws Exception {
         // given
-        given(paymentApprovalFacade.approve(any(), any(), anyLong(), any()))
+        given(paymentFacade.approve(any(), any(), anyLong(), any()))
                 .willThrow(new BusinessException(ErrorCode.PAYMENT_IN_PROGRESS));
 
         // when // then

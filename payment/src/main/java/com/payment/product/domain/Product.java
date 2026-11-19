@@ -109,6 +109,14 @@ public class Product {
     }
 
     /**
+     * {@link #decreaseStock}이 예외 없이 성공할지 미리 확인한다. 결제 시작에서 재고 부족을 예외(롤백)가 아니라
+     * "실패 기록 후 커밋"으로 처리하기 위해 쓴다. 판정 기준은 decreaseStock과 같다.
+     */
+    public boolean canDecreaseStock(int quantity) {
+        return !isDeleted() && quantity > 0 && status != ProductStatus.STOPPED && stock >= quantity;
+    }
+
+    /**
      * 재고를 차감한다. 재고가 0이 되면 SOLD_OUT으로 바뀐다.
      * 이 메서드는 "읽은 시점의 stock" 기준으로 검증하므로, 동시 호출을 막는 것은 호출하는 쪽(락 전략)의 몫이다.
      */

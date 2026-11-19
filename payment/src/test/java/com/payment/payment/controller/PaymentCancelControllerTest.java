@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.payment.common.exception.GlobalExceptionHandler;
 import com.payment.order.domain.OrderStatus;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.dto.PaymentResponse;
 import com.payment.payment.facade.PaymentCancelFacade;
 
@@ -40,7 +41,7 @@ class PaymentCancelControllerTest {
     void cancelSuccess() throws Exception {
         // given
         given(paymentCancelFacade.cancel(1L, "단순 변심"))
-                .willReturn(new PaymentResponse(1L, 10L, "pg-tx-1", 20_000L, OrderStatus.CANCELED));
+                .willReturn(new PaymentResponse(1L, 10L, "payment-key-1", 20_000L, OrderStatus.CANCELED, PaymentStatus.CANCELED));
 
         // when // then
         mockMvc.perform(post(URL)

@@ -2,7 +2,9 @@
 결제 승인 구간별 소요 시간 집계 (측정 전용).
 
 서버를 `--logging.level.payment.timing=debug`로 띄우면 PaymentSegmentTimer가 요청당 한 줄을 남긴다.
-  orderId=1 result=OK begin=95.9ms(conn=88.8ms,commit=2.5ms) startPaying=... pgApprove=301.6ms ... etc=0.0ms total=677.4ms
+  orderId=1 result=OK startPaying=95.9ms(conn=88.8ms,commit=2.5ms) pgApprove=301.6ms complete=... etc=0.0ms total=677.4ms
+구간 이름은 4-2+ 재설계(트랜잭션 2번) 후 startPaying, pgApprove, complete, fail, unknown, pgCancel이다.
+재설계 전 로그(begin, revertToPending, succeed)도 그대로 집계할 수 있게 이전 이름을 남겨 둔다.
 이 스크립트는 로그 파일에서 그 줄을 모아 결과(OK / FAIL / REPLAY)별, 구간별로 평균·p50·p95·최대를 낸다.
 DB 구간은 conn(커넥션 대기), commit, rest(= 구간 - conn - commit: SQL 실행 + 행 락 대기 + 코드)로 나눠 보여 준다.
 
@@ -20,7 +22,7 @@ LINE = re.compile(r"orderId=(\d+) result=(\w+)(.*)$")
 SEGMENT = re.compile(r"(\w+)=([\d.]+)ms(?:\(conn=([\d.]+)ms,commit=([\d.]+)ms\))?")
 
 SEGMENT_ORDER = ["begin", "startPaying", "pgApprove", "complete", "pgCancel",
-                 "revertToPending", "succeed", "fail", "etc", "total"]
+                 "revertToPending", "succeed", "fail", "unknown", "etc", "total"]
 
 
 def percentile(values, p):

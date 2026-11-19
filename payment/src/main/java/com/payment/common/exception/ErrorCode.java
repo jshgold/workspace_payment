@@ -24,6 +24,7 @@ public enum ErrorCode {
 
     // 주문
     ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER_001", "주문을 찾을 수 없습니다."),
+    ORDER_NOT_PAYABLE(HttpStatus.CONFLICT, "ORDER_002", "결제할 수 없는 주문입니다. 새 주문으로 결제해주세요."),
 
     // 결제 (PG)
     PAYMENT_AMOUNT_MISMATCH(HttpStatus.CONFLICT, "PAYMENT_004", "결제 승인 금액이 주문 금액과 일치하지 않습니다."),

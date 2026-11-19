@@ -1,5 +1,8 @@
 package com.payment.payment.infrastructure;
 
+import java.net.ConnectException;
+import java.net.UnknownHostException;
+import java.net.http.HttpConnectTimeoutException;
 import java.util.Set;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -56,7 +59,24 @@ public class TossPaymentClient implements PaymentClient {
     /** 4xx지만 이미 승인됐거나 승인 중일 수 있는 코드. 거절로 확정하면 안 된다. */
     private static final Set<String> UNKNOWN_RESULT_CODES = Set.of("ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING");
 
+    /** 연결 실패를 {@link PaymentGatewayException}으로 알릴 때 쓰는 우리 쪽 코드. (PG가 준 코드가 아니다) */
+    static final String CONNECTION_FAILED = "CONNECTION_FAILED";
+
     private final RestClient tossRestClient;
+
+    /**
+     * 연결이 맺어지기 전에 실패했는지 본다. 이때는 요청 바이트가 PG로 나가지 않았으므로 승인이 일어날 수 없다.
+     * 연결 거부, 호스트를 찾지 못함, 연결 타임아웃이 해당한다. 읽기 타임아웃은 요청이 이미 나갔을 수 있어 해당하지 않는다.
+     */
+    private static boolean isNotDelivered(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof ConnectException || t instanceof UnknownHostException
+                    || t instanceof HttpConnectTimeoutException) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     @Override
     public PgApproveResult approve(PgApproveRequest request) {
@@ -67,7 +87,12 @@ public class TossPaymentClient implements PaymentClient {
                     .body(new ConfirmBody(request.paymentKey(), request.orderNo(), request.amount()))
                     .exchange((httpRequest, response) -> toResult(request, response));
         } catch (ResourceAccessException e) {
-            // 연결 실패, 연결·읽기 타임아웃. 요청이 PG에 닿았는지, 승인됐는지 알 수 없다.
+            if (isNotDelivered(e)) {
+                // 연결 자체가 맺어지지 않았다. 요청이 PG에 닿지 않았으므로 승인될 수 없다. (명확한 실패)
+                log.warn("토스 승인 호출 연결 실패. 요청이 PG에 닿지 않았다. orderNo={}", request.orderNo(), e);
+                throw new PaymentGatewayException(CONNECTION_FAILED);
+            }
+            // 읽기 타임아웃, 응답 도중 끊김 등. 요청이 PG에 닿았는지, 승인됐는지 알 수 없다.
             log.warn("토스 승인 호출 중 네트워크 오류. 승인 여부를 알 수 없다. orderNo={}", request.orderNo(), e);
             throw new PaymentTimeoutException();
         } catch (RestClientException e) {

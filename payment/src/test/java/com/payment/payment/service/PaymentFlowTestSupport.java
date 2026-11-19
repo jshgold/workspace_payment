@@ -15,7 +15,9 @@ import com.payment.common.exception.ErrorCode;
 import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
+import com.payment.payment.domain.Payment;
 import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentRepository;
 import com.payment.payment.domain.PaymentTimeoutException;
@@ -87,7 +89,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         Order order = saveOrder(product, 2);
 
         // when
-        PaymentResponse response = paymentFacade.approve(order.getId(), "payment-key-1");
+        PaymentResponse response = approve(order, "payment-key-1");
 
         // then
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.PAID);
@@ -100,7 +102,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("PG가 거절하면 주문은 PENDING으로 돌아가고 결제 기록은 없으며, 선점 때 차감한 재고는 복구된다")
+    @DisplayName("PG가 거절하면 주문과 결제 시도는 FAILED(PAYMENT_DECLINED)로 끝나고, 선점 때 차감한 재고는 복구된다")
     void pgDeclined() {
         // given
         Product product = saveProduct(5);
@@ -108,15 +110,15 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willDecline("한도 초과");
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1")).isInstanceOf(PaymentDeclinedException.class);
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
-        assertThat(paymentRepository.count()).isZero();
+        assertThatThrownBy(() -> approve(order, "payment-key-1")).isInstanceOf(PaymentDeclinedException.class);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.FAILED);
+        assertPayment(order, PaymentStatus.FAILED, ErrorCode.PAYMENT_DECLINED);
         assertThat(stock(product)).isEqualTo(5);
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
     }
 
     @Test
-    @DisplayName("PG가 타임아웃이면 승인 여부를 모르므로 주문은 PAYING으로 남고, 선점 때 차감한 재고도 쥔 채로 남으며 취소 호출은 없다")
+    @DisplayName("PG가 타임아웃이면 승인 여부를 모르므로 주문은 PAYMENT_UNKNOWN, 결제 시도는 UNKNOWN이 되고, 재고는 쥔 채로 남으며 취소 호출은 없다")
     void pgTimeout() {
         // given
         Product product = saveProduct(5);
@@ -124,16 +126,16 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willTimeout();
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
-        assertThat(paymentRepository.count()).isZero();
+        assertThatThrownBy(() -> approve(order, "payment-key-1")).isInstanceOf(PaymentTimeoutException.class);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYMENT_UNKNOWN);
+        assertPayment(order, PaymentStatus.UNKNOWN, null);
         // 개선 A의 비용: 결과를 모르는 주문이 재고를 붙잡는다. 정리는 결제 조회·대사(4-4)의 몫이다.
         assertThat(stock(product)).isEqualTo(3);
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
     }
 
     @Test
-    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고 실패하며, 주문은 PENDING 그대로이고 재고와 결제 기록도 변하지 않는다")
+    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고, 주문과 결제 시도를 FAILED(STOCK_NOT_AVAILABLE)로 기록하며 재고는 변하지 않는다")
     void stockShortageFailsBeforePg() {
         // given: 주문 생성 이후 다른 주문이 재고를 가져가 결제 시점에는 재고가 모자란 상황
         Product product = saveProduct(5);
@@ -141,19 +143,18 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         setStock(product, 1);
 
         // when // then
-        // 구현체마다 예외 타입은 다르다. (비관적 락: 도메인의 IllegalStateException, 원자적 쿼리: BusinessException)
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("재고가 부족");
+        assertThatThrownBy(() -> approve(order, "payment-key-1"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.STOCK_NOT_AVAILABLE));
         assertThat(fakePaymentClient.approveCallCount()).isZero();
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
-        assertThat(paymentRepository.count()).isZero();
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.FAILED);
+        assertPayment(order, PaymentStatus.FAILED, ErrorCode.STOCK_NOT_AVAILABLE);
         assertThat(stock(product)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("PG 승인 후 금액 불일치로 보상 취소하면 PG 승인이 취소되고, 주문은 PENDING으로 돌아가며 재고는 복구된다")
+    @DisplayName("PG 승인 후 금액 불일치로 보상 취소하면 PG 승인이 취소되고, 주문과 결제 시도는 FAILED(승인 금액 기록)로 끝나며 재고는 복구된다")
     void amountMismatchThenCompensate() {
         // given
         Product product = saveProduct(5);
@@ -161,18 +162,19 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willApproveWithAmount(1L);
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
+        assertThatThrownBy(() -> approve(order, "payment-key-1"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_AMOUNT_MISMATCH));
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
         assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
-        assertThat(paymentRepository.count()).isZero();
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.FAILED);
+        Payment payment = assertPayment(order, PaymentStatus.FAILED, ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+        assertThat(payment.getApprovedAmount()).isEqualTo(1L);
         assertThat(stock(product)).isEqualTo(5);
     }
 
     @Test
-    @DisplayName("PG 승인 후 보상 취소마저 실패하면 주문은 PAYING으로 남아 추적할 수 있고, 돈이 묶였을 수 있으므로 재고도 복구하지 않는다")
+    @DisplayName("PG 승인 후 보상 취소마저 실패하면 돈이 묶였는지 모르므로 PAYMENT_UNKNOWN(PAYMENT_CANCEL_FAILED)으로 남아 대사 대상이 되고, 재고도 복구하지 않는다")
     void compensationFails() {
         // given
         Product product = saveProduct(5);
@@ -181,10 +183,11 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         fakePaymentClient.willFailCancel();
 
         // when // then
-        assertThatThrownBy(() -> paymentFacade.approve(order.getId(), "payment-key-1"))
+        assertThatThrownBy(() -> approve(order, "payment-key-1"))
                 .isInstanceOf(PaymentCancelFailedException.class);
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
-        assertThat(paymentRepository.count()).isZero();
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYMENT_UNKNOWN);
+        Payment payment = assertPayment(order, PaymentStatus.UNKNOWN, ErrorCode.PAYMENT_CANCEL_FAILED);
+        assertThat(payment.getApprovedAmount()).isEqualTo(1L);
         assertThat(stock(product)).isEqualTo(3);
     }
 
@@ -194,8 +197,8 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        stateService().startPaying(order.getId());
-        PgApproveResult approved = new PgApproveResult("pg-tx-dup", 2 * PRICE);
+        stateService().startPaying(command(order, "key-1", "payment-key-1"));
+        PgApproveResult approved = new PgApproveResult("payment-key-1", 2 * PRICE);
 
         // when
         PaymentResponse first = stateService().complete(order.getId(), approved);
@@ -208,22 +211,24 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("이미 결제가 진행 중인 주문은 다시 선점할 수 없다")
+    @DisplayName("이미 결제가 진행 중인 주문에 새 키로 결제를 시작하면 '처리 중'으로 거절한다")
     void startPayingTwiceFails() {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 1);
-        stateService().startPaying(order.getId());
+        stateService().startPaying(command(order, "key-1", "payment-key-1"));
 
         // when // then
-        assertThatThrownBy(() -> stateService().startPaying(order.getId()))
-                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> stateService().startPaying(command(order, "key-2", "payment-key-2")))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS));
     }
 
     /**
      * [트러블슈팅 개선 A 검증] docs/troubleshooting/payment-stock-deduction-timing.md
      * 개선 전: 재고를 PG 승인 뒤에 차감해서, 진 주문도 전부 PG 승인까지 가고 그 뒤 보상 취소됐다. (PG 승인 N, 취소 N-1)
      * 개선 후: 재고를 선점(startPaying)에서 차감하므로, 진 주문은 PG를 부르기 전에 실패한다. (PG 승인 1, 취소 0)
+     * 4-2+ 후: 진 주문도 결제 시도이므로 주문 FAILED, Payment FAILED(STOCK_NOT_AVAILABLE)로 남는다.
      */
     @Test
     @Tag("concurrency")
@@ -245,7 +250,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         // then
         long succeeded = CONTENDING_ORDERS - failures.size();
         long stockShortages = failures.stream()
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("재고가 부족"))
+                .filter(e -> e instanceof BusinessException be && be.getErrorCode() == ErrorCode.STOCK_NOT_AVAILABLE)
                 .count();
         log.info("[{}] 재고 {} / 주문 {}건 동시 결제 → 성공 {}, 재고 부족 {}, 기타 실패 {}, PG 승인 {}회, PG 취소 {}회, 소요 {}ms",
                 ClassUtils.getUserClass(stateService()).getSimpleName(), initialStock, CONTENDING_ORDERS,
@@ -255,17 +260,17 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         assertThat(succeeded).isEqualTo(1);
         assertThat(stockShortages).as("실패는 모두 재고 부족이어야 한다").isEqualTo(CONTENDING_ORDERS - 1);
         assertThat(succeeded * 1 + stock(product)).isEqualTo(initialStock);
-        assertThat(paymentRepository.count()).isEqualTo(1);
+        assertThat(paymentRepository.count()).as("진 주문도 실패 시도로 기록된다").isEqualTo(CONTENDING_ORDERS);
 
         // 개선의 증거: 진 주문은 PG까지 가지 않았다. (개선 전: 승인 10, 취소 9)
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
 
-        // 진 주문은 선점이 롤백되어 PENDING 그대로다.
+        // 진 주문은 PG 호출 전에 FAILED로 끝난다. 다시 사려면 새 주문을 만든다.
         long paid = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PAID).count();
-        long pending = orders.stream().filter(o -> orderStatus(o) == OrderStatus.PENDING).count();
+        long failed = orders.stream().filter(o -> orderStatus(o) == OrderStatus.FAILED).count();
         assertThat(paid).isEqualTo(1);
-        assertThat(pending).isEqualTo(CONTENDING_ORDERS - 1);
+        assertThat(failed).isEqualTo(CONTENDING_ORDERS - 1);
     }
 
     private List<Throwable> approveConcurrently(List<Order> orders) throws InterruptedException {
@@ -276,13 +281,13 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
         ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
 
         for (int i = 0; i < orders.size(); i++) {
-            Long orderId = orders.get(i).getId();
+            Order order = orders.get(i);
             String paymentKey = "payment-key-" + i;
             executor.submit(() -> {
                 ready.countDown();
                 try {
                     start.await();
-                    paymentFacade.approve(orderId, paymentKey);
+                    approve(order, paymentKey);
                 } catch (Throwable e) {
                     failures.add(e);
                 } finally {
@@ -300,6 +305,22 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
 
     private Product saveProduct(int stock) {
         return productRepository.save(Product.create("키보드", PRICE, stock));
+    }
+
+    private PaymentResponse approve(Order order, String paymentKey) {
+        return paymentFacade.approve(order.getId(), "key-" + order.getId(), order.getTotalPrice(), paymentKey);
+    }
+
+    private StartPayingCommand command(Order order, String idempotencyKey, String paymentKey) {
+        return new StartPayingCommand(order.getId(), idempotencyKey, order.getTotalPrice(), paymentKey);
+    }
+
+    private Payment assertPayment(Order order, PaymentStatus status, ErrorCode failureCode) {
+        Payment payment = paymentRepository.findByOrderId(order.getId()).orElseThrow();
+        assertThat(payment.getStatus()).isEqualTo(status);
+        assertThat(payment.getFailureCode()).isEqualTo(failureCode == null ? null : failureCode.name());
+        assertThat(payment.getAmount()).isEqualTo(order.getTotalPrice());
+        return payment;
     }
 
     private Order saveOrder(Product product, int quantity) {

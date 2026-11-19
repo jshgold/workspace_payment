@@ -140,14 +140,15 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("PAYING이 아닌 주문은 결제 완료 처리하거나 PENDING으로 되돌릴 수 없다")
-    void markPaidAndRevertFailWhenNotPaying() {
+    @DisplayName("PAYING이 아닌 주문은 결제 완료·실패·결과 모름으로 바꿀 수 없다")
+    void payingTransitionsFailWhenNotPaying() {
         // given
         Order pending = Order.create(1L, product(5), 1);
 
         // when // then
         assertThatThrownBy(pending::markPaid).isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(pending::revertToPending).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(pending::markFailed).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(pending::markPaymentUnknown).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -217,17 +218,48 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("PAYING 주문은 PENDING으로 되돌려 다시 결제를 시작할 수 있다")
-    void revertToPending() {
+    @DisplayName("PAYING 주문이 실패로 확정되면 FAILED가 되고, 결제 시도 이전(PENDING)으로 돌아가지 않으므로 다시 결제를 시작할 수 없다")
+    void failedOrderCannotStartPayingAgain() {
         // given
         Order order = Order.create(1L, product(5), 1);
         order.startPaying();
 
         // when
-        order.revertToPending();
-        order.startPaying();
+        order.markFailed();
 
         // then
-        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYING);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.FAILED);
+        assertThatThrownBy(order::startPaying).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("PAYING 주문의 결과를 모르면 PAYMENT_UNKNOWN이 되고, 그 상태에서 다시 결제를 시작할 수 없다")
+    void paymentUnknown() {
+        // given
+        Order order = Order.create(1L, product(5), 1);
+        order.startPaying();
+
+        // when
+        order.markPaymentUnknown();
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_UNKNOWN);
+        assertThatThrownBy(order::startPaying).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("PENDING 주문은 PG 호출 전에 거절되면 바로 FAILED가 되고, PENDING이 아니면 거절할 수 없다")
+    void rejectBeforePaying() {
+        // given
+        Order pending = Order.create(1L, product(5), 1);
+        Order paying = Order.create(1L, product(5), 1);
+        paying.startPaying();
+
+        // when
+        pending.rejectBeforePaying();
+
+        // then
+        assertThat(pending.getStatus()).isEqualTo(OrderStatus.FAILED);
+        assertThatThrownBy(paying::rejectBeforePaying).isInstanceOf(IllegalStateException.class);
     }
 }

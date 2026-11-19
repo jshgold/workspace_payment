@@ -125,10 +125,25 @@ public class Order {
         this.status = OrderStatus.PAID;
     }
 
-    /** 돈이 빠져나가지 않은 것이 확실할 때(PG 거절, 승인 취소 완료) 선점을 풀어 재시도를 허용한다. */
-    public void revertToPending() {
-        assertStatus(OrderStatus.PAYING, "결제 대기로 되돌릴 수 없는 주문 상태입니다.");
-        this.status = OrderStatus.PENDING;
+    /**
+     * PG를 호출하기 전에 결제 시도를 거절하고 주문을 끝낸다. (재고 부족, 요청 금액 불일치)
+     * 다시 결제하려면 새 주문을 만든다. 결제 시도 이전 상태로 되돌리는 간선은 없다.
+     */
+    public void rejectBeforePaying() {
+        assertStatus(OrderStatus.PENDING, "결제 시작을 거절할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.FAILED;
+    }
+
+    /** 돈이 나가지 않은 것이 확정된 실패(PG 거절, 보상 취소 완료)로 주문을 끝낸다. 재고 복구는 호출하는 쪽이 같은 트랜잭션에서 한다. */
+    public void markFailed() {
+        assertStatus(OrderStatus.PAYING, "결제 실패 처리할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.FAILED;
+    }
+
+    /** PG 응답을 놓쳐 승인 여부를 모른다. 재고를 쥔 채 대사를 기다린다. */
+    public void markPaymentUnknown() {
+        assertStatus(OrderStatus.PAYING, "결제 결과 모름으로 바꿀 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.PAYMENT_UNKNOWN;
     }
 
     /** PG 취소 호출 전에 주문을 선점한다. 결제 완료(PAID) 주문만 취소할 수 있다. */
@@ -143,7 +158,10 @@ public class Order {
         this.status = OrderStatus.CANCELED;
     }
 
-    /** PG가 취소를 명확히 거절해 결제가 그대로 살아 있을 때 선점을 풀어 재시도를 허용한다. */
+    /**
+     * PG가 취소를 명확히 거절해 결제가 그대로 살아 있을 때 선점을 풀어 재시도를 허용한다.
+     * 상태 전이표의 예외 간선이다. 확정된 결과를 지우는 것이 아니라 진행 중인 취소 시도가 무산된 것이다.
+     */
     public void revertToPaid() {
         assertStatus(OrderStatus.CANCELING, "결제 완료로 되돌릴 수 없는 주문 상태입니다.");
         this.status = OrderStatus.PAID;

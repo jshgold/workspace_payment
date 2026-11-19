@@ -1,5 +1,7 @@
 package com.payment.payment.service;
 
+import java.util.Optional;
+
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
 import com.payment.order.domain.Order;
@@ -14,6 +16,7 @@ import com.payment.product.domain.Product;
 import com.payment.product.domain.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -26,9 +29,9 @@ import org.springframework.transaction.annotation.Transactional;
  * 주문과 상품 행을 {@code SELECT ... FOR UPDATE}로 잠그고 도메인 메서드로 상태를 바꾼다.
  * <p>
  * 잠그는 순서는 항상 <b>orders → product</b>다. 다른 경로(결제 취소 등)도 같은 순서를 지켜야 데드락이 나지 않는다.
- * 재고는 PG 호출 전({@code startPaying})에 차감하고, 결제가 무산되면 {@code revertToPending}에서 복구한다.
- * 재고 행 락은 각 트랜잭션 맨 끝에서 잡아 락을 쥐는 시간을 줄인다.
+ * 재고는 PG 호출 전({@code startPaying})에 차감하고, 결제가 실패로 확정되면 {@code fail}에서 복구한다.
  */
+@Slf4j
 @Primary
 @Service
 @RequiredArgsConstructor
@@ -37,55 +40,88 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final PaymentRepository paymentRepository;
+    private final PaymentReplayer replayer;
     private final ApplicationEventPublisher eventPublisher;
 
-    /**
-     * 주문 선점과 재고 차감을 한 트랜잭션에서 한다. 재고가 모자라면 예외로 선점까지 롤백되어 PG를 부르지 않는다.
-     * (트러블슈팅 개선 A: docs/troubleshooting/payment-stock-deduction-timing.md)
-     */
     @Override
     @Transactional
-    public PaymentTarget startPaying(Long orderId) {
-        Order order = findOrderForUpdate(orderId);
+    public StartPayingResult startPaying(StartPayingCommand command) {
+        Optional<StartPayingResult> replayed = replayer.replayIfKeyExists(command.idempotencyKey(), command.orderId());
+        if (replayed.isPresent()) {
+            return replayed.get();
+        }
+
+        Order order = findOrderForUpdate(command.orderId());
+        if (order.getStatus() != OrderStatus.PENDING) {
+            return replayer.rejectNotPending(order, command.idempotencyKey());
+        }
+
+        // 클라이언트가 보낸 금액은 믿지 않는다. 정상 흐름에서는 다를 수 없으므로 시도로 기록하고 주문을 끝낸다.
+        if (order.getTotalPrice() != command.requestedAmount()) {
+            log.warn("결제 요청 금액 불일치. orderId={}, 서버 금액={}, 요청 금액={}",
+                    order.getId(), order.getTotalPrice(), command.requestedAmount());
+            return rejectBeforePaying(order, command, ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH);
+        }
+
+        Product product = findProductForUpdate(order.getProductId());
+        if (!product.canDecreaseStock(order.getQuantity())) {
+            return rejectBeforePaying(order, command, ErrorCode.STOCK_NOT_AVAILABLE);
+        }
+
+        product.decreaseStock(order.getQuantity());
         order.startPaying();
-
-        findProductForUpdate(order.getProductId()).decreaseStock(order.getQuantity());
-
-        return new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice());
+        paymentRepository.save(Payment.request(
+                order.getId(), command.idempotencyKey(), command.paymentKey(), order.getTotalPrice()));
+        return new StartPayingResult.Proceed(
+                new PaymentTarget(order.getId(), order.getOrderNo(), order.getTotalPrice()));
     }
 
     @Override
     @Transactional
     public PaymentResponse complete(Long orderId, PgApproveResult approveResult) {
         Order order = findOrderForUpdate(orderId);
-
-        // 이미 처리된 주문(중복 메시지)은 예외가 아니라 정상 반환으로 걸러낸다. 호출자가 PG 취소를 하지 않도록.
+        Payment payment = findPayment(orderId);
+        // 이미 처리된 주문(중복 반영)은 예외가 아니라 정상 반환으로 걸러낸다. 호출자가 PG 취소를 하지 않도록.
         if (order.getStatus() == OrderStatus.PAID) {
-            Payment existing = paymentRepository.findByOrderId(orderId)
-                    .orElseThrow(() -> new IllegalStateException("PAID 주문에 결제 기록이 없습니다. orderId=" + orderId));
-            return PaymentResponse.of(order, existing);
+            return PaymentResponse.of(order, payment);
         }
 
-        // 재고는 startPaying에서 이미 차감했다. 여기서는 상품 행을 잠그지 않는다.
         order.markPaid();
-        Payment payment = paymentRepository.save(
-                Payment.create(orderId, approveResult.pgTransactionId(), approveResult.approvedAmount()));
+        payment.approve(approveResult.approvedAmount());
 
         // 처리는 커밋 뒤(AFTER_COMMIT)라서, 이 트랜잭션이 롤백되면 이벤트는 버려진다.
         eventPublisher.publishEvent(new PaymentCompletedEvent(
-                orderId, payment.getId(), payment.getPgTransactionId(), payment.getAmount()));
-
+                orderId, payment.getId(), payment.getPaymentKey(), payment.getAmount()));
         return PaymentResponse.of(order, payment);
     }
 
-    /** 선점을 풀고 startPaying에서 차감한 재고를 되돌린다. 잠그는 순서는 startPaying과 같이 orders → product다. */
+    /** 잠그는 순서는 startPaying과 같이 orders → product다. */
     @Override
     @Transactional
-    public void revertToPending(Long orderId) {
+    public void fail(Long orderId, ErrorCode failureCode, Long approvedAmount) {
         Order order = findOrderForUpdate(orderId);
-        order.revertToPending();
-
+        order.markFailed();
+        findPayment(orderId).fail(failureCode, approvedAmount);
         findProductForUpdate(order.getProductId()).increaseStock(order.getQuantity());
+    }
+
+    @Override
+    @Transactional
+    public void markUnknown(Long orderId, ErrorCode reason, Long approvedAmount) {
+        findOrderForUpdate(orderId).markPaymentUnknown();
+        findPayment(orderId).markUnknown(reason, approvedAmount);
+    }
+
+    private StartPayingResult rejectBeforePaying(Order order, StartPayingCommand command, ErrorCode reason) {
+        order.rejectBeforePaying();
+        paymentRepository.save(Payment.rejected(
+                order.getId(), command.idempotencyKey(), command.paymentKey(), order.getTotalPrice(), reason));
+        return new StartPayingResult.Rejected(reason);
+    }
+
+    private Payment findPayment(Long orderId) {
+        return paymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new IllegalStateException("결제 시도 기록이 없는 주문입니다. orderId=" + orderId));
     }
 
     private Product findProductForUpdate(Long productId) {
