@@ -16,6 +16,11 @@
 ## 2. 지금까지 한 것: 현재 구조 측정 완료 (개선은 아직 없음)
 
 두 테스트는 서로 다른 문제를 짚었고, 그래서 개선도 두 개로 나뉜다.
+| 문서 | 상태 | 요약 |
+|---|---|---|
+| `payment-stock-deduction-timing.md` | **현재 구조 측정 완료, 개선 미적용** | 재고를 PG 승인 뒤에 차감 → 재고 1에 N건이면 PG 승인 N, 취소 N-1. JUnit·k6·DB로 확인. 스레드 고갈은 해피 케이스에서도 같은 수준이라 **경합 탓으로 볼 수 없다**고 결론을 고쳤다. |
+| `payment-transaction-granularity.md` | **현재 구조 측정 완료, 개선 미적용** (병목 = 커넥션 풀, 2-7) | 단건 실측 완료: 이긴 요청 트랜잭션 4/SQL 12, 진 요청 트랜잭션 5/SQL 12, 주문 행 `FOR UPDATE` 3/4번. 진 요청도 Payment INSERT 후 롤백함(IDENTITY). 해피 케이스가 계산상 1.5초여야 하는데 3.5초 걸린 원인은 아직 미확인. |
+| `product-list-pagination.md` | 완료 (phase-01) | 이번 작업과 무관 |
 
 ### 첫 번째 테스트: 경합 때 PG 호출 낭비 → `payment-stock-deduction-timing.md`
 **질문:** 재고를 PG 승인 **뒤에** 차감하는 현재 구조에서, 경합이 나면 PG 호출 때문에 어떤 비용이 생기나?
@@ -44,6 +49,7 @@
 - **설명하지 못한 것:** `complete`의 "나머지"(SQL·코드)가 단건에서도 약 18ms로 다른 트랜잭션(3~7ms)보다 길다.
 
 ## 3. 개선 A 적용·측정 완료, 다음은 B 여부 결정 (사용자 지시 대기)
+
 
 > A의 전후 비교 정리본(글 작성용): `payment-stock-before-pg-result.md`
 
@@ -136,6 +142,7 @@ python3 -I k6/analyze_starvation.py <json 파일> <로그 파일>   # 상품 조
 - 둘 다 꺼져 있으면(기본값) 시간을 재지 않고 원래 코드만 실행한다.
 - JUnit 경합 테스트: `PaymentFlowTestSupport.stockContentionApprovesOnlyWinner()` (개선 A 이후 기대값: PG 승인 1 / 취소 0)
 - `FakePaymentClient.willApproveWithAmount(long)`: 다른 금액으로 승인해 보상 취소 경로를 재현
+
 
 ## 5. 환경 메모
 
