@@ -17,6 +17,7 @@ import com.payment.order.domain.OrderStatus;
 import com.payment.payment.domain.PaymentCompletedEvent;
 import com.payment.payment.domain.PaymentNotifier;
 import com.payment.payment.domain.PaymentRepository;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.dto.PaymentResponse;
 import com.payment.payment.facade.PaymentFacade;
@@ -97,13 +98,13 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         Order order = saveOrder(product, 2);
 
         // when
-        PaymentResponse response = facade(strategy).approve(order.getId(), "payment-key-1");
+        PaymentResponse response = approve(strategy, order);
 
         // then
         ArgumentCaptor<PaymentCompletedEvent> captor = ArgumentCaptor.forClass(PaymentCompletedEvent.class);
         verify(paymentNotifier, timeout(2000).times(1)).notifyPaid(captor.capture());
         assertThat(captor.getValue()).isEqualTo(new PaymentCompletedEvent(
-                order.getId(), response.paymentId(), response.pgTransactionId(), 2 * PRICE));
+                order.getId(), response.paymentId(), response.paymentKey(), 2 * PRICE));
         assertThat(handlerThread.get())
                 .isNotEqualTo(Thread.currentThread().getName())
                 .startsWith("payment-event-");
@@ -111,30 +112,31 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
 
     @ParameterizedTest
     @EnumSource(Strategy.class)
-    @DisplayName("결과 반영(complete) 트랜잭션이 이벤트 발행 뒤 롤백되면 후처리는 실행되지 않고, 주문은 PAYING 그대로이며 결제 기록도 남지 않는다")
+    @DisplayName("결과 반영(complete) 트랜잭션이 이벤트 발행 뒤 롤백되면 후처리는 실행되지 않고, 주문은 PAYING, 결제 시도는 REQUESTED 그대로다")
     void notHandledWhenTransactionRollsBack(Strategy strategy) {
         // given: 재고 차감이 startPaying으로 옮겨져 complete가 재고 부족으로 실패하는 경로는 없다.
         // 그래서 바깥 트랜잭션에 참여시킨 뒤 롤백 표시를 해, "발행은 됐지만 커밋되지 않은" 상황을 직접 만든다.
         Product product = saveProduct(5);
         Order order = saveOrder(product, 3);
         PaymentStateService stateService = stateService(strategy);
-        stateService.startPaying(order.getId());
+        stateService.startPaying(command(order));
 
         // when
         transactionTemplate.executeWithoutResult(status -> {
-            stateService.complete(order.getId(), new PgApproveResult("pg-tx-rollback", 3 * PRICE));
+            stateService.complete(order.getId(), new PgApproveResult("payment-key-" + order.getId(), 3 * PRICE));
             status.setRollbackOnly();
         });
 
         // then
         verify(paymentNotifier, after(500).never()).notifyPaid(any());
         assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.PAYING);
-        assertThat(paymentRepository.findByOrderId(order.getId())).isEmpty();
+        assertThat(paymentRepository.findByOrderId(order.getId()).orElseThrow().getStatus())
+                .isEqualTo(PaymentStatus.REQUESTED);
     }
 
     @ParameterizedTest
     @EnumSource(Strategy.class)
-    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고 실패하며, 후처리도 실행되지 않고 주문은 PENDING 그대로다")
+    @DisplayName("결제 시점에 재고가 모자라면 PG를 부르지 않고 실패로 기록되며, 결제 완료 후처리는 실행되지 않는다")
     void notHandledWhenStockShortage(Strategy strategy) {
         // given: 주문 생성 시점에는 재고가 충분했지만, 결제 전에 재고가 줄어든 상황
         Product product = saveProduct(5);
@@ -142,11 +144,12 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         drainStock(product, 4);
 
         // when // then
-        assertThatThrownBy(() -> facade(strategy).approve(order.getId(), "payment-key-1"))
+        assertThatThrownBy(() -> approve(strategy, order))
                 .isInstanceOf(RuntimeException.class);
         verify(paymentNotifier, after(500).never()).notifyPaid(any());
-        assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.PENDING);
-        assertThat(paymentRepository.findByOrderId(order.getId())).isEmpty();
+        assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus()).isEqualTo(OrderStatus.FAILED);
+        assertThat(paymentRepository.findByOrderId(order.getId()).orElseThrow().getStatus())
+                .isEqualTo(PaymentStatus.FAILED);
         assertThat(fakePaymentClient.approveCallCount()).as("PG 승인은 호출되지 않는다").isZero();
         assertThat(fakePaymentClient.cancelCallCount()).isZero();
     }
@@ -157,8 +160,8 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 1);
-        pessimisticStateService.startPaying(order.getId());
-        PgApproveResult approveResult = new PgApproveResult("pg-tx-dup", PRICE);
+        pessimisticStateService.startPaying(command(order));
+        PgApproveResult approveResult = new PgApproveResult("payment-key-" + order.getId(), PRICE);
 
         // when
         pessimisticStateService.complete(order.getId(), approveResult);
@@ -167,6 +170,16 @@ class PaymentCompletedEventTest extends IntegrationTestSupport {
         // then
         verify(paymentNotifier, timeout(2000).times(1)).notifyPaid(any());
         verify(paymentNotifier, after(500).times(1)).notifyPaid(any());
+    }
+
+    private PaymentResponse approve(Strategy strategy, Order order) {
+        return facade(strategy).approve(order.getId(), "key-" + order.getId(), order.getTotalPrice(),
+                "payment-key-" + order.getId());
+    }
+
+    private StartPayingCommand command(Order order) {
+        return new StartPayingCommand(order.getId(), "key-" + order.getId(), order.getTotalPrice(),
+                "payment-key-" + order.getId());
     }
 
     private PaymentFacade facade(Strategy strategy) {

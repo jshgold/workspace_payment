@@ -2,7 +2,6 @@ package com.payment.payment.facade;
 
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
-import com.payment.payment.domain.PaymentCancelFailedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
@@ -11,26 +10,31 @@ import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.dto.PaymentResponse;
 import com.payment.payment.service.PaymentStateService;
 import com.payment.payment.service.PaymentTarget;
+import com.payment.payment.service.StartPayingCommand;
+import com.payment.payment.service.StartPayingResult;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 /**
  * 결제 승인 오케스트레이션. 이 클래스에는 {@code @Transactional}이 없다. (ARCHITECTURE 5-2: 선 외부 I/O → 후 DB 트랜잭션)
  * <pre>
- * 1. startPaying  (짧은 트랜잭션) 주문 선점 PENDING → PAYING + 재고 차감. 재고가 없으면 여기서 끝나 PG를 부르지 않는다
- * 2. PG 승인 호출  (트랜잭션 밖)   DB 커넥션을 쥐지 않는다
- * 3. complete     (짧은 트랜잭션) Order PAID + Payment 저장
- * 4. 3번 실패 시   PG 승인 취소(보상) 후 선점 해제 + 재고 복구
+ * 1. startPaying (짧은 트랜잭션) 멱등키 재전송 확인 + 주문 선점 + 재고 차감 + 시도 기록(Payment REQUESTED)
+ *                               PG 호출 전 거절(재고 부족, 요청 금액 불일치)이면 실패를 기록하고 여기서 끝난다
+ * 2. PG 승인 호출 (트랜잭션 밖)   DB 커넥션을 쥐지 않는다
+ * 3. 결과 반영    (짧은 트랜잭션) 아래 셋 중 하나
  * </pre>
- * 실패를 "돈이 나갔는지 아는가"로 나눠 처리한다.
+ * PG 결과는 "돈이 나갔는지 아는가"로 셋으로 나눈다. 이 분류를 섞지 않는다.
  * <ul>
- *   <li>거절: 돈 안 나감 → PENDING으로 복구, 재고 복구</li>
- *   <li>타임아웃·알 수 없는 예외: <b>모름</b> → PAYING 유지, 재고도 쥔 채로 둔다 (복구는 결제 조회/대사의 몫)</li>
- *   <li>승인 후 반영 실패: 돈 나감 → PG 취소, 취소가 성공해야만 PENDING으로 복구 + 재고 복구</li>
+ *   <li>성공: {@code complete} → PAID / APPROVED</li>
+ *   <li>명확한 실패 (거절, 요청이 PG에 닿지 않은 연동 오류): {@code fail} → FAILED / FAILED, 재고 복구</li>
+ *   <li>결과 모름 (타임아웃, 5xx, 알 수 없는 예외): {@code markUnknown} → PAYMENT_UNKNOWN / UNKNOWN, 재고 유지 (대사의 몫)</li>
  * </ul>
+ * 승인 후 반영할 수 없으면(금액 불일치, 반영 실패) PG 승인을 취소(보상)한다. 취소가 성공해야 FAILED로 확정하고,
+ * 취소도 실패하면 돈이 묶였는지 모르므로 결과 모름으로 둔다.
+ * <p>
+ * 요청 1건의 트랜잭션은 2번이다. (트러블슈팅 개선 B, 재설계 전 4번)
  */
 @Slf4j
 @Service
@@ -40,63 +44,116 @@ public class PaymentFacade {
     private final PaymentStateService paymentStateService;
     private final PaymentClient paymentClient;
 
-    public PaymentResponse approve(Long orderId, String paymentKey) {
-        // 주문을 선점한 뒤에 입력 오류로 실패하면 PAYING이 남으므로, 선점 전에 확인한다.
+    public PaymentResponse approve(Long orderId, String idempotencyKey, long requestedAmount, String paymentKey) {
+        // 형식이 틀린 요청은 시도로 기록할 수 없으므로(필수 값 없음) 트랜잭션 전에 거절한다.
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IllegalArgumentException("멱등키는 필수입니다.");
+        }
         if (paymentKey == null || paymentKey.isBlank()) {
             throw new IllegalArgumentException("결제 키는 필수입니다.");
         }
-        // [측정 전용] PaymentSegmentTimer.time은 구간 시간만 잰다. PaymentApprovalFacade가 기록을 시작하지 않았으면 그대로 실행한다.
-        PaymentTarget target = PaymentSegmentTimer.time("startPaying", () -> paymentStateService.startPaying(orderId));
 
+        // [측정 전용] 구간별 소요 시간 기록. 흐름에는 영향이 없다. (PaymentSegmentTimer)
+        PaymentSegmentTimer.start(orderId);
+        String result = "FAIL";
+        try {
+            StartPayingResult started = PaymentSegmentTimer.time("startPaying", () -> paymentStateService.startPaying(
+                    new StartPayingCommand(orderId, idempotencyKey, requestedAmount, paymentKey)));
+
+            PaymentResponse response = switch (started) {
+                case StartPayingResult.Replayed replayed -> {
+                    result = "REPLAY";
+                    yield replayed.response();
+                }
+                case StartPayingResult.Rejected rejected -> throw new BusinessException(rejected.errorCode());
+                case StartPayingResult.Proceed proceed -> approveWithPg(proceed.target(), paymentKey);
+            };
+            if (!"REPLAY".equals(result)) {
+                result = "OK";
+            }
+            return response;
+        } finally {
+            PaymentSegmentTimer.finish(result);
+        }
+    }
+
+    private PaymentResponse approveWithPg(PaymentTarget target, String paymentKey) {
         PgApproveResult approveResult = requestApproval(target, paymentKey);
 
         if (approveResult.approvedAmount() != target.amount()) {
             log.error("PG 승인 금액 불일치. orderId={}, 서버 금액={}, 승인 금액={}",
-                    orderId, target.amount(), approveResult.approvedAmount());
-            compensate(orderId, approveResult.pgTransactionId(), "승인 금액 불일치");
+                    target.orderId(), target.amount(), approveResult.approvedAmount());
+            compensate(target.orderId(), approveResult, ErrorCode.PAYMENT_AMOUNT_MISMATCH, "승인 금액 불일치");
             throw new BusinessException(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
         }
 
-        return complete(orderId, approveResult);
+        return complete(target.orderId(), approveResult);
     }
 
     private PgApproveResult requestApproval(PaymentTarget target, String paymentKey) {
         try {
             return PaymentSegmentTimer.time("pgApprove",
                     () -> paymentClient.approve(new PgApproveRequest(target.orderNo(), paymentKey, target.amount())));
-        } catch (PaymentDeclinedException | PaymentGatewayException e) {
-            // 명확한 거절(또는 우리 연동 문제로 요청이 승인 단계에 가지 못함): 돈이 나가지 않았으므로 재시도할 수 있게 선점을 푼다.
-            PaymentSegmentTimer.time("revertToPending", () -> paymentStateService.revertToPending(target.orderId()));
+        } catch (PaymentDeclinedException e) {
+            recordFailure(target.orderId(), ErrorCode.PAYMENT_DECLINED, null);
+            throw e;
+        } catch (PaymentGatewayException e) {
+            // 요청이 PG에 닿지 않았음이 확실한 연동 오류(연결 실패, 인증 오류 등). 돈이 나가지 않았다.
+            recordFailure(target.orderId(), ErrorCode.PAYMENT_GATEWAY_ERROR, null);
+            throw e;
+        } catch (RuntimeException e) {
+            // 타임아웃·5xx·알 수 없는 예외는 승인 여부를 모른다. 실패로 확정하면 승인된 결제를 놓칠 수 있다.
+            recordUnknown(target.orderId(), null, null, e);
             throw e;
         }
-        // 타임아웃 등 그 외 예외는 승인 여부를 모른다. 되돌리면 승인된 결제를 놓칠 수 있어 PAYING을 유지한다.
     }
 
     private PaymentResponse complete(Long orderId, PgApproveResult approveResult) {
         try {
             return PaymentSegmentTimer.time("complete", () -> paymentStateService.complete(orderId, approveResult));
-        } catch (DataIntegrityViolationException e) {
-            // 이미 같은 주문의 결제가 기록된 경우일 수 있다. 정상 결제를 취소하면 안 되므로 PG 취소를 하지 않고 PAYING을 유지한다.
-            log.error("결제 반영 중 무결성 위반. PG 취소 없이 확인 필요. orderId={}, pgTransactionId={}",
-                    orderId, approveResult.pgTransactionId(), e);
-            throw e;
         } catch (RuntimeException e) {
             log.warn("PG 승인 후 결제 반영 실패. 승인 취소를 시도한다. orderId={}, pgTransactionId={}",
                     orderId, approveResult.pgTransactionId(), e);
-            compensate(orderId, approveResult.pgTransactionId(), "결제 반영 실패");
+            compensate(orderId, approveResult, ErrorCode.INTERNAL_SERVER_ERROR, "결제 반영 실패");
             throw e;
         }
     }
 
-    /** PG 승인을 취소하고, 취소가 성공한 경우에만 선점을 푼다. 취소가 실패하면 PAYING으로 남겨 추적할 수 있게 한다. */
-    private void compensate(Long orderId, String pgTransactionId, String reason) {
+    /**
+     * PG 승인을 취소하고, 취소가 성공한 경우에만 실패로 확정한다(재고 복구 포함).
+     * 취소가 실패하면 돈이 묶였는지 모르므로 결과 모름(PAYMENT_UNKNOWN + PAYMENT_CANCEL_FAILED)으로 남겨 대사 대상으로 만든다.
+     */
+    private void compensate(Long orderId, PgApproveResult approveResult, ErrorCode failureCode, String reason) {
         try {
-            PaymentSegmentTimer.time("pgCancel", () -> paymentClient.cancel(pgTransactionId, reason));
-        } catch (PaymentCancelFailedException e) {
-            log.error("보상 취소 실패. 돈이 묶여 있을 수 있어 PAYING을 유지한다. orderId={}, pgTransactionId={}",
-                    orderId, pgTransactionId, e);
+            PaymentSegmentTimer.time("pgCancel", () -> paymentClient.cancel(approveResult.pgTransactionId(), reason));
+        } catch (RuntimeException e) {
+            log.error("보상 취소 실패. 돈이 묶여 있을 수 있어 결과 모름으로 남긴다. orderId={}, pgTransactionId={}",
+                    orderId, approveResult.pgTransactionId(), e);
+            recordUnknown(orderId, ErrorCode.PAYMENT_CANCEL_FAILED, approveResult.approvedAmount(), e);
             throw e;
         }
-        PaymentSegmentTimer.time("revertToPending", () -> paymentStateService.revertToPending(orderId));
+        recordFailure(orderId, failureCode, approveResult.approvedAmount());
+    }
+
+    /**
+     * 실패 기록 자체가 실패해도 호출자가 던질 원래 예외를 가리지 않는다. (로그로 남긴다)
+     * 이때 주문은 PAYING으로 남고, 오래된 PAYING은 대사가 확정한다. (4-4)
+     */
+    private void recordFailure(Long orderId, ErrorCode failureCode, Long approvedAmount) {
+        try {
+            PaymentSegmentTimer.time("fail", () -> paymentStateService.fail(orderId, failureCode, approvedAmount));
+        } catch (RuntimeException e) {
+            log.error("결제 실패 기록에 실패했다. PAYING으로 남아 대사가 필요하다. orderId={}, failureCode={}",
+                    orderId, failureCode, e);
+        }
+    }
+
+    private void recordUnknown(Long orderId, ErrorCode reason, Long approvedAmount, RuntimeException cause) {
+        try {
+            PaymentSegmentTimer.time("unknown", () -> paymentStateService.markUnknown(orderId, reason, approvedAmount));
+        } catch (RuntimeException e) {
+            log.error("결제 결과 모름 기록에 실패했다. PAYING으로 남아 대사가 필요하다. orderId={}, cause={}",
+                    orderId, cause.getClass().getSimpleName(), e);
+        }
     }
 }

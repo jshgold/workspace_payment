@@ -8,7 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * [측정 전용 계측] 결제 승인 요청 1건을 구간(멱등키 선점, 주문 선점, PG 승인, 결과 반영 ...)별로 나눠 소요 시간을 잰다.
+ * [측정 전용 계측] 결제 승인 요청 1건을 구간별로 나눠 소요 시간을 잰다.
+ * 구간: startPaying(키 확인·선점·재고·시도 기록), pgApprove, complete, fail, unknown, pgCancel
  * (docs/troubleshooting/payment-transaction-granularity.md)
  * <p>
  * 요청이 끝나면 {@code payment.timing} 로거에 한 줄로 남긴다. 기본은 꺼져 있고

@@ -16,6 +16,7 @@ import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
 import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PaymentRepository;
 import com.payment.payment.dto.PaymentResponse;
 import com.payment.payment.facade.PaymentCancelFacade;
@@ -90,7 +91,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        PaymentResponse approved = approveFacade.approve(order.getId(), "payment-key-1");
+        PaymentResponse approved = approve(order);
         assertThat(stock(product)).isEqualTo(3);
 
         // when
@@ -101,7 +102,9 @@ class PaymentCancelTest extends IntegrationTestSupport {
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.CANCELED);
         assertThat(stock(product)).isEqualTo(5);
         assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
-        assertThat(fakePaymentClient.canceledTransactionIds()).containsExactly(approved.pgTransactionId());
+        assertThat(fakePaymentClient.canceledTransactionIds()).containsExactly(approved.paymentKey());
+        assertThat(paymentRepository.findByOrderId(order.getId()).orElseThrow().getStatus())
+                .as("취소가 확정되면 결제 시도도 CANCELED가 된다").isEqualTo(PaymentStatus.CANCELED);
     }
 
     @Test
@@ -110,7 +113,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId(), "payment-key-1");
+        approve(order);
         cancelFacade.cancel(order.getId(), "단순 변심");
 
         // when // then
@@ -142,7 +145,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId(), "payment-key-1");
+        approve(order);
         fakePaymentClient.willFailCancel();
 
         // when // then
@@ -166,7 +169,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(2);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId(), "payment-key-1");
+        approve(order);
         assertThat(productStatus(product)).isEqualTo(ProductStatus.SOLD_OUT);
 
         // when
@@ -184,7 +187,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // given
         Product product = saveProduct(5);
         Order order = saveOrder(product, 2);
-        approveFacade.approve(order.getId(), "payment-key-1");
+        approve(order);
         fakePaymentClient.delay(Duration.ofMillis(300));
 
         // when
@@ -215,7 +218,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         List<Order> pendingOrders = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
             Order paid = saveOrder(product, 1);
-            approveFacade.approve(paid.getId(), "payment-key-1");
+            approve(paid);
             paidOrders.add(paid);
             pendingOrders.add(saveOrder(product, 1));
         }
@@ -226,7 +229,7 @@ class PaymentCancelTest extends IntegrationTestSupport {
         long start = System.nanoTime();
         List<Throwable> errors = runConcurrently(THREAD_COUNT, index -> index < 5
                 ? () -> cancelFacade.cancel(paidOrders.get(index).getId(), "취소")
-                : () -> approveFacade.approve(pendingOrders.get(index - 5).getId(), "payment-key-1"));
+                : () -> approve(pendingOrders.get(index - 5)));
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
         // then: 5 + 취소 5 - 승인 5 = 5
@@ -235,6 +238,12 @@ class PaymentCancelTest extends IntegrationTestSupport {
         assertThat(stock(product)).isEqualTo(5);
         assertThat(paidOrders).allSatisfy(o -> assertThat(orderStatus(o)).isEqualTo(OrderStatus.CANCELED));
         assertThat(pendingOrders).allSatisfy(o -> assertThat(orderStatus(o)).isEqualTo(OrderStatus.PAID));
+    }
+
+    /** 주문마다 다른 멱등키와 paymentKey로 결제한다. (실제로도 결제창 인증마다 paymentKey가 다르다) */
+    private PaymentResponse approve(Order order) {
+        return approveFacade.approve(order.getId(), "key-" + order.getId(), order.getTotalPrice(),
+                "payment-key-" + order.getId());
     }
 
     /** 모든 스레드를 동시에 출발시켜, 실패한 작업의 예외만 모아 돌려준다. */

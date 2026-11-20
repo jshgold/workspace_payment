@@ -16,12 +16,12 @@ import com.payment.common.exception.ErrorCode;
 import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
-import com.payment.payment.domain.IdempotencyKeyRepository;
+import com.payment.payment.domain.Payment;
 import com.payment.payment.domain.PaymentDeclinedException;
+import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PaymentRepository;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.dto.PaymentResponse;
-import com.payment.payment.facade.PaymentApprovalFacade;
 import com.payment.payment.facade.PaymentFacade;
 import com.payment.payment.infrastructure.FakePaymentClient;
 import com.payment.product.domain.Product;
@@ -63,15 +63,9 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
     protected PaymentRepository paymentRepository;
 
     @Autowired
-    protected IdempotencyKeyRepository idempotencyKeyRepository;
-
-    @Autowired
-    protected IdempotencyService idempotencyService;
-
-    @Autowired
     protected FakePaymentClient fakePaymentClient;
 
-    protected PaymentApprovalFacade approvalFacade;
+    protected PaymentFacade approvalFacade;
 
     protected abstract PaymentStateService stateService();
 
@@ -80,13 +74,11 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
     @BeforeEach
     void setUp() {
         fakePaymentClient.reset();
-        approvalFacade = new PaymentApprovalFacade(
-                idempotencyService, new PaymentFacade(stateService(), fakePaymentClient));
+        approvalFacade = new PaymentFacade(stateService(), fakePaymentClient);
     }
 
     @AfterEach
     void cleanUp() {
-        idempotencyKeyRepository.deleteAllInBatch();
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         productRepository.deleteAllInBatch();
@@ -130,7 +122,7 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
     }
 
     @Test
-    @DisplayName("PG 타임아웃은 결과를 모르므로 같은 키의 재요청이 실패가 아니라 '처리 중'을 받고 PG를 다시 부르지 않는다")
+    @DisplayName("PG 타임아웃은 결과를 모르므로 주문이 PAYMENT_UNKNOWN이 되고, 같은 키의 재요청은 '처리 중'을 받으며 PG를 다시 부르지 않는다")
     void timeoutThenRetryGetsInProgress() {
         // given
         Product product = saveProduct(5);
@@ -144,7 +136,7 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS));
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYING);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYMENT_UNKNOWN);
     }
 
     @Test
@@ -165,7 +157,25 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
     }
 
     @Test
-    @DisplayName("요청 금액이 서버가 계산한 주문 금액과 다르면 PG를 부르지 않고 키도 남기지 않는다")
+    @DisplayName("성공한 결제의 키로 금액만 바꿔 재요청하면 첫 성공 결과를 돌려주지 않고 거절하며 PG를 다시 부르지 않는다")
+    void keyReusedWithDifferentAmountIsRejected() {
+        // given
+        Product product = saveProduct(5);
+        Order order = saveOrder(product);
+        approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1");
+
+        // when // then
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L, "payment-key-1"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED));
+        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAID);
+        assertThat(paymentRepository.findByOrderId(order.getId()).orElseThrow().getStatus())
+                .isEqualTo(PaymentStatus.APPROVED);
+    }
+
+    @Test
+    @DisplayName("요청 금액이 서버가 계산한 주문 금액과 다르면 PG를 부르지 않고, 시도를 FAILED로 기록해 주문을 끝내며 재고는 그대로다")
     void requestAmountMismatch() {
         // given
         Product product = saveProduct(5);
@@ -176,8 +186,32 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH));
         assertThat(fakePaymentClient.approveCallCount()).isZero();
-        assertThat(idempotencyKeyRepository.count()).isZero();
-        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PENDING);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.FAILED);
+        Payment payment = paymentRepository.findByOrderId(order.getId()).orElseThrow();
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(payment.getFailureCode()).isEqualTo(ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH.name());
+        assertThat(payment.getAmount()).as("클라이언트 금액이 아니라 서버 금액을 남긴다").isEqualTo(AMOUNT);
+        assertThat(stock(product)).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("요청 금액 불일치로 끝난 주문을 같은 키로 다시 보내면 같은 실패를, 새 키로 보내면 '결제할 수 없는 주문'을 받는다")
+    void retryAfterRequestAmountMismatch() {
+        // given
+        Product product = saveProduct(5);
+        Order order = saveOrder(product);
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L, "payment-key-1"))
+                .isInstanceOf(BusinessException.class);
+
+        // when // then
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L, "payment-key-1"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH));
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-2", AMOUNT, "payment-key-2"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.ORDER_NOT_PAYABLE));
+        assertThat(fakePaymentClient.approveCallCount()).isZero();
+        assertThat(paymentRepository.count()).isEqualTo(1);
     }
 
     @Test
@@ -204,12 +238,11 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
         assertThat(paymentRepository.count()).isEqualTo(1);
         assertThat(stock(product)).isEqualTo(5 - QUANTITY);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAID);
-        assertThat(idempotencyKeyRepository.count()).isEqualTo(1);
     }
 
     @Test
     @Tag("concurrency")
-    @DisplayName("같은 주문에 서로 다른 키로 10번 동시에 요청하면 정확히 1번만 성공하고 PG도 1번만 호출된다")
+    @DisplayName("같은 주문에 서로 다른 키로 10번 동시에 요청하면 정확히 1번만 성공하고 나머지는 '처리 중'을 받으며 PG도 1번만 호출된다")
     void concurrentRequestsWithDifferentKeys() throws InterruptedException {
         // given
         Product product = saveProduct(5);
@@ -221,13 +254,12 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
 
         // then
         long succeeded = outcomes.stream().filter(Outcome::isSuccess).count();
-        long stateConflicts = outcomes.stream()
-                .filter(o -> o.error() instanceof IllegalStateException).count();
-        log.info("[{}] 다른 키 {}건 → 성공 {}, 상태 충돌 {}, 기타 {}, PG 호출 {}",
-                strategyName(), THREAD_COUNT, succeeded, stateConflicts,
-                THREAD_COUNT - succeeded - stateConflicts, fakePaymentClient.approveCallCount());
+        long inProgress = outcomes.stream().filter(o -> o.hasErrorCode(ErrorCode.PAYMENT_IN_PROGRESS)).count();
+        log.info("[{}] 다른 키 {}건 → 성공 {}, 처리 중 {}, 기타 {}, PG 호출 {}",
+                strategyName(), THREAD_COUNT, succeeded, inProgress,
+                THREAD_COUNT - succeeded - inProgress, fakePaymentClient.approveCallCount());
         assertThat(succeeded).isEqualTo(1);
-        assertThat(stateConflicts).isEqualTo(THREAD_COUNT - 1);
+        assertThat(inProgress).isEqualTo(THREAD_COUNT - 1);
         assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
         assertThat(paymentRepository.count()).isEqualTo(1);
         assertThat(stock(product)).isEqualTo(5 - QUANTITY);

@@ -63,6 +63,7 @@
 | 흐름 | 전이 |
 |---|---|
 | 승인 시작 | `PENDING → PAYING` |
+| 결제 시작 거절 (PG 호출 전: 재고 부족, 요청 금액 불일치) | `PENDING → FAILED` |
 | 승인 결과 | `PAYING → PAID` / `PAYING → FAILED` / `PAYING → PAYMENT_UNKNOWN` |
 | 결과 모름 대사 | `PAYMENT_UNKNOWN → PAID` / `PAYMENT_UNKNOWN → FAILED` |
 | 서버 중단 추정 대사 | `PAYING`(N분 경과) `→ PAID` / `→ FAILED` |
@@ -75,7 +76,9 @@
 - `FAILED`, `CANCELED`, `EXPIRED`는 최종 상태다. 여기서 다른 상태로 가지 않는다.
 - `PAYING → PENDING`처럼 **결제 시도 이전 상태로 되돌리는 간선은 없다.**
   - 예외: `CANCELING → PAID`, `CANCEL_UNKNOWN → PAID`. 취소 시도가 무산된 것(PG 거절, 대사로 취소되지 않았음을 확인)이지 확정된 결과를 지우는 것이 아니다. 취소 시도와 거절 사유는 기록으로 남긴다. (4-3)
-- **재고는 결제 시작(`PENDING → PAYING`) 트랜잭션에서 차감한다(선차감).** 재고가 모자라면 선점까지 롤백되어 PG를 호출하지 않는다.
+- **재고는 결제 시작(`PENDING → PAYING`) 트랜잭션에서 차감한다(선차감).** 재고가 모자라면 PG를 호출하지 않고, 같은 트랜잭션에서 주문을 `FAILED`로 바꾸고 Payment를 `FAILED`(`STOCK_NOT_AVAILABLE`)로 남긴 뒤 커밋한다.
+  - 요청 금액이 서버 계산 금액과 다를 때도 같다. (`PAYMENT_REQUEST_AMOUNT_MISMATCH`, 클라이언트가 보낸 금액은 로그로 남긴다)
+  - PG를 부르지 않았어도 결제 시도는 있었으므로 기록한다. 같은 키의 재요청은 같은 실패를 받고, 새 키는 `ORDER_NOT_PAYABLE`을 받는다.
   - `→ PAID` 전이(승인, 대사)에서는 재고를 건드리지 않는다.
   - `→ FAILED` 전이(승인 실패, 대사, 보상 취소 후)에서는 같은 트랜잭션에서 재고를 복구한다.
   - `PAYING`, `PAYMENT_UNKNOWN`에 머무는 동안은 재고를 쥐고 있다. 대사 기준 시간 N을 정할 때 이 점을 고려한다.
@@ -84,12 +87,15 @@
 
 | Payment 흐름 | 전이 |
 |---|---|
+| 생성 | 결제 시작 시 `REQUESTED`로 생성 / PG 호출 전 거절이면 처음부터 `FAILED`로 생성 |
 | 승인 결과 | `REQUESTED → APPROVED` / `REQUESTED → FAILED` / `REQUESTED → UNKNOWN` |
 | 결과 모름 대사 | `UNKNOWN → APPROVED` / `UNKNOWN → FAILED` |
 | 서버 중단 추정 대사 | `REQUESTED`(N분 경과) `→ APPROVED` / `→ FAILED` |
 | 취소 | `APPROVED → CANCELED` |
 
 - PG가 승인했지만 반영 단계에서 보상 취소한 경우(금액 불일치, DB 반영 실패)는 `FAILED` + `failure_code`로 남긴다.
+- 보상 취소 자체가 실패하면 돈이 묶였는지 모르므로 `UNKNOWN`(주문 `PAYMENT_UNKNOWN`) + `failure_code=PAYMENT_CANCEL_FAILED`로 남겨 대사 대상으로 만든다. PG가 승인한 금액은 `approved_amount`에 남긴다. 대사는 승인 여부뿐 아니라 금액까지 비교해야 한다.
+- `failure_code`에는 `ErrorCode` 이름을 저장한다. 같은 키의 재요청에 같은 에러를 돌려줄 때 그대로 쓴다.
 - 취소 진행·결과 모름은 Order 상태(`CANCELING`, `CANCEL_UNKNOWN`)로 관리하고, Payment는 취소가 확정될 때 `CANCELED`가 된다.
 
 ## 6. 락 학습 방식
@@ -122,6 +128,11 @@ phase 파일의 "시작 전에 정할 것"이나 설계 변경으로 정한 내�
 | 멱등키 저장 위치 | 별도 테이블 → `payment.idempotency_key` 컬럼 | 키 선점과 결제 시도 기록을 한 트랜잭션으로 묶기 위해 | phase-04 재설계 |
 | 결과 모름 상태 분리 | `PAYING`(진행 중)과 `PAYMENT_UNKNOWN`(결과 모름)을 분리, 취소도 `CANCELING`/`CANCEL_UNKNOWN`으로 분리 | 대사 대상을 상태로 고르고, 화면 문구와 장애 지표를 나누기 위해 | phase-04 재설계 |
 | 버려진 주문 처리 | 주문 중복 생성은 막지 않고, 결제를 시작하지 않은 `PENDING`은 `EXPIRED`로 만료 | 주문 생성이 아무것도 소모하지 않으므로 | phase-04 |
-| 같은 주문 중복 결제 요청 응답 | 락 획득 후 `PENDING`이 아니면 `PAYMENT_IN_PROGRESS`(409) 반환, 프론트는 무시 | 화면은 첫 요청의 응답으로 그려지므로 | phase-04 재설계 |
+| 같은 주문 중복 결제 요청 응답 | 락 획득 후 `PENDING`이 아니면 상태별로 응답: `PAYING`·`PAYMENT_UNKNOWN`·`PAID` → `PAYMENT_IN_PROGRESS`(409, 프론트는 무시), `FAILED`·`EXPIRED`·`CANCELING`·`CANCELED` → `ORDER_NOT_PAYABLE`(409, 새 주문 안내) | 화면은 첫 요청의 응답으로 그려지므로. (사용자 작성) | phase-04 재설계 (4-2+에서 분리) |
+| PG 호출 전 거절 (재고 부족, 요청 금액 불일치) | 기록한다: 주문 `PENDING → FAILED`, Payment `FAILED` + `failure_code` | (사용자 작성) PG까지 가지 않았을 뿐 결제 시도는 있었다. 금액 불일치는 정상 흐름에서 생길 수 없다 | phase-04 4-2+ |
+| 보상 취소 실패 | 주문 `PAYMENT_UNKNOWN`, Payment `UNKNOWN` + `failure_code=PAYMENT_CANCEL_FAILED` | (사용자 작성) | phase-04 4-2+ |
+| `payment` 컬럼 | `pg_transaction_id` → `payment_key`, `approved_amount`·`updated_at` 추가 | (사용자 작성) | phase-04 4-2+ |
+| `idempotency_key` 테이블 | V9에서 `payment.idempotency_key`로 이관 후 삭제 (사용자 승인 2026-11-20) | | phase-04 4-2+ |
+| 같은 키 + 다른 금액 재요청 | 거절: `IDEMPOTENCY_KEY_REUSED`(422)를 같이 쓰고 메시지를 "같은 멱등키로 다른 내용의 요청이 왔습니다."로 넓힘. 단, 요청 금액 불일치(`PAYMENT_REQUEST_AMOUNT_MISMATCH`)로 실패한 시도는 금액을 비교하지 않고 같은 실패를 돌려준다 (클라이언트 금액을 저장하지 않아 재전송과 구별할 수 없으므로) | (사용자 작성) | phase-04 4-2+ (2026-11-20) |
 | 취소 멱등키 적용 | (4-3에서 결정) | | phase-04 |
 | 만료·대사 기준 시간 N | (4-4에서 결정) | | phase-04 |

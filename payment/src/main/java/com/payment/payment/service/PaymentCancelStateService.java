@@ -36,7 +36,7 @@ public class PaymentCancelStateService {
         Order order = findOrderForUpdate(orderId);
         order.startCanceling();
         Payment payment = findPayment(orderId);
-        return new CancelTarget(order.getId(), payment.getPgTransactionId());
+        return new CancelTarget(order.getId(), payment.getPaymentKey());
     }
 
     /**
@@ -53,6 +53,7 @@ public class PaymentCancelStateService {
         }
 
         order.markCanceled();
+        payment.cancel();
 
         Product product = productRepository.findByIdForUpdate(order.getProductId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCT_NOT_FOUND));

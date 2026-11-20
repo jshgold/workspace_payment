@@ -42,11 +42,11 @@ public class PaymentCancelFacade {
 
     private void requestCancel(CancelTarget target, String reason) {
         try {
-            paymentClient.cancel(target.pgTransactionId(), reason);
+            paymentClient.cancel(target.paymentKey(), reason);
         } catch (PaymentCancelFailedException e) {
             // 명확한 취소 실패: 결제는 그대로 살아 있으므로 PAID로 되돌려 다시 취소할 수 있게 한다.
-            log.warn("PG 취소 실패. PAID로 복구한다. orderId={}, pgTransactionId={}",
-                    target.orderId(), target.pgTransactionId(), e);
+            log.warn("PG 취소 실패. PAID로 복구한다. orderId={}, paymentKey={}",
+                    target.orderId(), target.paymentKey(), e);
             cancelStateService.revertToPaid(target.orderId());
             throw e;
         }
@@ -57,8 +57,8 @@ public class PaymentCancelFacade {
         try {
             return cancelStateService.completeCancel(target.orderId());
         } catch (RuntimeException e) {
-            log.error("PG 취소는 성공했으나 DB 반영에 실패했다. CANCELING으로 남으며 확인 필요. orderId={}, pgTransactionId={}",
-                    target.orderId(), target.pgTransactionId(), e);
+            log.error("PG 취소는 성공했으나 DB 반영에 실패했다. CANCELING으로 남으며 확인 필요. orderId={}, paymentKey={}",
+                    target.orderId(), target.paymentKey(), e);
             throw e;
         }
     }

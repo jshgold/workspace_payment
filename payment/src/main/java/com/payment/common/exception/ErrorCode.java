@@ -24,12 +24,13 @@ public enum ErrorCode {
 
     // 주문
     ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER_001", "주문을 찾을 수 없습니다."),
+    ORDER_NOT_PAYABLE(HttpStatus.CONFLICT, "ORDER_002", "결제할 수 없는 주문입니다. 새 주문으로 결제해주세요."),
 
     // 결제 (PG)
     PAYMENT_AMOUNT_MISMATCH(HttpStatus.CONFLICT, "PAYMENT_004", "결제 승인 금액이 주문 금액과 일치하지 않습니다."),
     PAYMENT_REQUEST_AMOUNT_MISMATCH(HttpStatus.BAD_REQUEST, "PAYMENT_005", "요청 금액이 주문 금액과 일치하지 않습니다."),
     PAYMENT_IN_PROGRESS(HttpStatus.CONFLICT, "PAYMENT_006", "같은 요청이 처리 중입니다. 같은 멱등키로 잠시 후 다시 확인해주세요."),
-    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_CONTENT, "PAYMENT_007", "이미 다른 주문에 사용된 멱등키입니다."),
+    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_CONTENT, "PAYMENT_007", "같은 멱등키로 다른 내용의 요청이 왔습니다."),
     PAYMENT_DECLINED(HttpStatus.PAYMENT_REQUIRED, "PAYMENT_001", "결제가 거절되었습니다."),
     PAYMENT_TIMEOUT(HttpStatus.GATEWAY_TIMEOUT, "PAYMENT_002", "결제사 응답이 지연되어 결제 결과를 확인할 수 없습니다."),
     PAYMENT_CANCEL_FAILED(HttpStatus.BAD_GATEWAY, "PAYMENT_003", "결제 취소에 실패했습니다."),
