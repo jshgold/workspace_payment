@@ -95,10 +95,28 @@
 
 ## 1-7. 측정 전에 준비할 것
 
-- [ ] k6 스크립트에 "상품 여러 개에 요청 나누기" 옵션 추가 (예: `PRODUCTS`, `STOCK_PER_PRODUCT`). 지금은 상품 1개만 만든다.
-- [ ] L1(순차 2건)을 돌릴 방법 (k6 순차 실행 옵션 또는 curl)
+- [x] k6 스크립트에 "상품 여러 개에 요청 나누기" 옵션 추가 → `stock-contention.js`에 `PRODUCTS` 추가 (2026-11-21). `STOCK`은 상품 하나당 재고, 주문 i는 상품 i % `PRODUCTS`에 붙는다. 생략하면 예전과 같다(상품 1개).
+- [x] L1(순차 2건)을 돌릴 방법 → 같은 스크립트에 `SEQUENTIAL=true` 추가. VU 1개가 주문 순서대로 하나씩 승인한다.
+  - `k6 inspect`로 옵션 조합(동시 200/상품 100, 순차 2, 잘못된 `PRODUCTS` 거절)만 확인했다. 서버를 띄워 실제로 돌려 보지는 않았다.
+
+시나리오별 실행 명령 (모두 `k6 run ... k6/stock-contention.js`)
+
+| ID | 옵션 |
+|---|---|
+| H1 | `-e ORDERS=1 -e STOCK=1` |
+| H10-분산 / H10-공유 | `-e ORDERS=10 -e STOCK=1 -e PRODUCTS=10` / `-e ORDERS=10 -e STOCK=10` |
+| H200-분산 / H200-공유 | `-e ORDERS=200 -e STOCK=1 -e PRODUCTS=200` / `-e ORDERS=200 -e STOCK=200` |
+| L1 | `-e ORDERS=2 -e STOCK=1 -e SEQUENTIAL=true` |
+| C2 | `-e ORDERS=2 -e STOCK=1` |
+| C10-분산 / C10-집중 | `-e ORDERS=10 -e STOCK=1 -e PRODUCTS=5` / `-e ORDERS=10 -e STOCK=1` |
+| C200-분산 / C200-집중 | `-e ORDERS=200 -e STOCK=1 -e PRODUCTS=100` / `-e ORDERS=200 -e STOCK=1` |
 - [ ] 반복 실행(워밍업 + 3회)과 실행 구간 구분 (`analyze_timing.py --since-order-id`)
-- [ ] X·A 커밋에서 승인 API 요청 형식(경로, 헤더, 본문)이 B와 같은지 확인. 다르면 스크립트를 버전별로 맞춘다
+- [x] X·A 커밋에서 승인 API 요청 형식(경로, 헤더, 본문)이 B와 같은지 확인. 다르면 스크립트를 버전별로 맞춘다
+  - 확인 결과 (2026-11-21): **같다. 스크립트 하나로 세 버전을 잴 수 있다.**
+    - 승인 요청(경로, `Idempotency-Key` 헤더, 본문 `amount`·`paymentKey`), 상품·주문 생성 API, 가짜 PG `stats`·`reset`, 예외 처리기, 설정 파일 모두 같다.
+    - 다른 것은 승인 성공 응답 본문(`pgTransactionId` → `paymentKey`, `paymentStatus` 추가)뿐이고, k6는 응답 본문을 읽지 않고 상태 코드(200/409)만 본다.
+    - 진 요청은 X·A에서 409 `STATE_CONFLICT`, B에서 409 `STOCK_NOT_AVAILABLE`이다. 상태 코드가 같아 집계에 문제없다.
+    - `analyze_timing.py`는 현재 버전이 X·A 구간 이름(`begin`, `succeed`, `revertToPending`)도 집계한다. 스크립트는 현재 작업 폴더의 것을 쓴다. (`2f25076`에는 이 파일이 없다)
 - [ ] 버전별 worktree와 빈 DB 준비 방법 결정
 
 ## 1-8. 결과
