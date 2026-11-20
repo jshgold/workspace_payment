@@ -46,7 +46,7 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
     @Override
     @Transactional
     public StartPayingResult startPaying(StartPayingCommand command) {
-        Optional<StartPayingResult> replayed = replayer.replayIfKeyExists(command.idempotencyKey(), command.orderId());
+        Optional<StartPayingResult> replayed = replayer.replayIfKeyExists(command.idempotencyKey(), command.orderId(), command.requestedAmount());
         if (replayed.isPresent()) {
             return replayed.get();
         }
@@ -61,14 +61,14 @@ public class AtomicUpdatePaymentStateService implements PaymentStateService {
 
         if (amount != command.requestedAmount()) {
             if (orderRepository.transitionStatus(orderId, OrderStatus.PENDING, OrderStatus.FAILED) == 0) {
-                return replayer.rejectNotPending(findOrderForUpdate(orderId), command.idempotencyKey());
+                return replayer.rejectNotPending(findOrderForUpdate(orderId), command.idempotencyKey(), command.requestedAmount());
             }
             log.warn("결제 요청 금액 불일치. orderId={}, 서버 금액={}, 요청 금액={}", orderId, amount, command.requestedAmount());
             return recordRejected(orderId, command, amount, ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH);
         }
 
         if (orderRepository.transitionStatus(orderId, OrderStatus.PENDING, OrderStatus.PAYING) == 0) {
-            return replayer.rejectNotPending(findOrderForUpdate(orderId), command.idempotencyKey());
+            return replayer.rejectNotPending(findOrderForUpdate(orderId), command.idempotencyKey(), command.requestedAmount());
         }
 
         // 주문 선점과 재고 차감을 한 트랜잭션에서 한다. 재고가 모자라면 PG를 부르지 않고 실패로 기록한다.

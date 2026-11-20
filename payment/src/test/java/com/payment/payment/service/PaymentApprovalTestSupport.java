@@ -157,6 +157,24 @@ public abstract class PaymentApprovalTestSupport extends IntegrationTestSupport 
     }
 
     @Test
+    @DisplayName("성공한 결제의 키로 금액만 바꿔 재요청하면 첫 성공 결과를 돌려주지 않고 거절하며 PG를 다시 부르지 않는다")
+    void keyReusedWithDifferentAmountIsRejected() {
+        // given
+        Product product = saveProduct(5);
+        Order order = saveOrder(product);
+        approvalFacade.approve(order.getId(), "key-1", AMOUNT, "payment-key-1");
+
+        // when // then
+        assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", 100L, "payment-key-1"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED));
+        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
+        assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAID);
+        assertThat(paymentRepository.findByOrderId(order.getId()).orElseThrow().getStatus())
+                .isEqualTo(PaymentStatus.APPROVED);
+    }
+
+    @Test
     @DisplayName("요청 금액이 서버가 계산한 주문 금액과 다르면 PG를 부르지 않고, 시도를 FAILED로 기록해 주문을 끝내며 재고는 그대로다")
     void requestAmountMismatch() {
         // given

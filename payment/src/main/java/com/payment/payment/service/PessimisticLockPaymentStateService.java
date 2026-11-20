@@ -46,14 +46,14 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
     @Override
     @Transactional
     public StartPayingResult startPaying(StartPayingCommand command) {
-        Optional<StartPayingResult> replayed = replayer.replayIfKeyExists(command.idempotencyKey(), command.orderId());
+        Optional<StartPayingResult> replayed = replayer.replayIfKeyExists(command.idempotencyKey(), command.orderId(), command.requestedAmount());
         if (replayed.isPresent()) {
             return replayed.get();
         }
 
         Order order = findOrderForUpdate(command.orderId());
         if (order.getStatus() != OrderStatus.PENDING) {
-            return replayer.rejectNotPending(order, command.idempotencyKey());
+            return replayer.rejectNotPending(order, command.idempotencyKey(), command.requestedAmount());
         }
 
         // 클라이언트가 보낸 금액은 믿지 않는다. 정상 흐름에서는 다를 수 없으므로 시도로 기록하고 주문을 끝낸다.

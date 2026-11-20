@@ -29,7 +29,7 @@
   - **학습 포인트:** 4xx와 5xx/타임아웃을 왜 다르게 다뤄야 하나? 잘못 분류하면 PG에서 승인된 결제를 실패로 처리하게 된다.
   - **후속:** 이 시점의 구현은 타임아웃·5xx 등 결과를 모르는 경우 `PAYING`을 유지하고, 거절(`PaymentDeclinedException`)과 연동 오류(`PaymentGatewayException`)는 `PAYING → PENDING`으로 되돌린다. 어느 경우든 Payment는 승인 성공 시에만 생성된다. 4-2+에서 재설계한다.
 
-- [ ] **4-2+. 결제 모델 재설계 (Payment = 결제 시도 기록)** — 설계 검토 중 발견한 결함 수정 (`docs/payment-redesign-discussion.md`)
+- [x] **4-2+. 결제 모델 재설계 (Payment = 결제 시도 기록)** — 설계 검토 중 발견한 결함 수정 (`docs/payment-redesign-discussion.md`)
   - **배경:** phase-03 3-3 명세대로 Payment를 승인 후에만 생성한다. 타임아웃은 `PAYING`으로 막혀 이중 결제는 일어나지 않지만, 아래 문제가 남아 있다.
     - 결과를 모르는 건(타임아웃)에 결제 기록이 없다. 주문 `PAYING`과 멱등키 `IN_PROGRESS`만 남고, 무엇을 시도했는지(`paymentKey`, 금액)는 결제 쪽에 남지 않는다.
     - 거절된 결제의 이력이 사라진다. 주문이 `PENDING`으로 돌아가고 Payment row도 없다.
@@ -45,7 +45,7 @@
        - PG 응답 타임아웃 → Payment row가 `paymentKey`, 금액과 함께 남아야 한다 (현재: row 없음)
        - PG 응답 타임아웃 → 주문이 `PAYMENT_UNKNOWN`이어야 한다 (현재: `PAYING`)
     4. ~~구현 계획(상태 전이표, V9 마이그레이션, 변경 클래스/테스트 목록)을 보고하고 확인받는다.~~ — 완료 (2026-11-20, 결정은 `intent.md` 8절)
-  - **진행 상황 (2026-11-20):** 구현 완료, 재현 테스트 8개 통과, 전체 테스트 269개 통과, k6 재측정 완료(`payment-transaction-granularity.md` 2-9: 부하 중 개선 없음, 단건만 개선). **남은 것: "같은 키 + 다른 금액" 거절 여부 결정** (지금은 다른 주문만 거절한다).
+  - **진행 상황 (2026-11-20):** 구현 완료, 재현 테스트 8개 통과, 전체 테스트 269개 통과, k6 재측정 완료(`payment-transaction-granularity.md` 2-9: 부하 중 개선 없음, 단건만 개선). ~~남은 것: "같은 키 + 다른 금액" 거절 여부 결정~~ → 거절로 결정·구현 (2026-11-20, `PaymentReplayer`, `keyReusedWithDifferentAmountIsRejected`, 결제 패키지 테스트 117개 통과, 결정은 `intent.md` 8절).
   - **계획 때 정할 것 (지금 코드와 새 설계 사이에서 비어 있는 부분):**
     - **PG 호출 전 거절의 처리:** 재고 부족, 요청 금액 불일치는 `startPaying` 트랜잭션이 롤백되어 주문은 `PENDING`, 멱등키·Payment는 남지 않는다. 지금은 멱등키에 `FAILED`를 기록해 같은 키 재요청이 같은 실패를 받는다. 새 구조에서는 같은 키 재요청이 다시 판정된다. 이대로 둘지 정한다.
     - **보상 취소가 실패한 경우:** 지금은 `PAYING`에 재고를 쥔 채로 남는다. 승인은 됐지만 반영도 취소도 안 된 상태이므로 `PAYMENT_UNKNOWN`(대사 대상)으로 보낼지 정한다.
