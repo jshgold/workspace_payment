@@ -110,6 +110,8 @@
 | C2 | `-e ORDERS=2 -e STOCK=1` |
 | C10-분산 / C10-집중 | `-e ORDERS=10 -e STOCK=1 -e PRODUCTS=5` / `-e ORDERS=10 -e STOCK=1` |
 | C200-분산 / C200-집중 | `-e ORDERS=200 -e STOCK=1 -e PRODUCTS=100` / `-e ORDERS=200 -e STOCK=1` |
+- [x] 스크립트·집계 동작 확인 (2026-11-22, B 현재 코드, H1·L1·C2 각 1회, 기록은 남기지 않음) — 새 옵션, orderId 범위 출력, `analyze_timing.py` 범위 집계 모두 정상.
+  **서버 재기동 직후 첫 요청이 크게 느렸다** (`startPaying` 42ms vs 이후 8~9ms). 시나리오마다 워밍업을 반드시 둔다.
 - [ ] 반복 실행(워밍업 + 3회)과 실행 구간 구분 (`analyze_timing.py --since-order-id`)
 - [x] X·A 커밋에서 승인 API 요청 형식(경로, 헤더, 본문)이 B와 같은지 확인. 다르면 스크립트를 버전별로 맞춘다
   - 확인 결과 (2026-11-21): **같다. 스크립트 하나로 세 버전을 잴 수 있다.**
