@@ -27,8 +27,9 @@
    - [x] X (`2f25076` worktree + `payment_x`) — 2026-11-23, `test-list.md` 1-8-X (X→A→B 비교표 포함). 주요 발견: A는 경합 비용(진 요청 655~792 → 18~230ms, PG 낭비 0)을, B는 상품 행 하나에 몰리지 않은 200건의 커넥션 대기를 절반으로 줄였다(재고 경합 있는 C200-분산도 절반). H200-공유는 X 701 → A 588ms. worktree는 세션 임시 폴더 `wt-x` (정리 전)
    - 실행은 시나리오 순서 고정 스크립트로 한다. `zsh k6/run-all.sh <결과 폴더>` → `python3 -I k6/summarize.py <결과 폴더> <서버 로그> k6/analyze_timing.py` (2026-11-23 세션 임시 폴더에서 `k6/`로 옮김. B 원본으로 다시 집계해 같은 결과 확인)
    - A·X 코드는 `git worktree add <폴더> <커밋>`으로 다른 폴더에 꺼내 띄운다. 지금 작업 폴더는 바뀌지 않는다. 끝나면 `git worktree remove <폴더>`.
-8. [ ] T1: 트랜잭션 수 실측 (SQL 로그·Hibernate 통계, 시간 측정과 따로)
+8. [x] T1: 트랜잭션 수 실측 (SQL 로그·Hibernate 통계, 시간 측정과 따로) — 2026-11-23, `test-list.md` 1-8-T1. 추정치 모두 맞음 (이긴 요청 X 4 / A 4 / B 2, 진 요청 X 5 / A 3 / B 1). B 진 요청만 상품 행 락을 쥔 채 INSERT payment·UPDATE orders·COMMIT. 스크립트 `k6/t1-single.sh`, `k6/t1_summary.py`
 9. [ ] 결과 정리 후 phase-04 4-3 진행
+   - 정리본: `payment-x-a-b-summary.md` (2026-11-24 작성, 7절 결론은 사용자 작성 대기)
 
 **같은 세션에서 한 다른 작업 (커밋 안 함)**
 - phase-04 4-2+ 마지막 항목 "같은 키 + 다른 금액" → 거절로 구현. `PaymentReplayer`에 금액 비교 추가(요청 금액 불일치로 실패한 시도는 제외), `IDEMPOTENCY_KEY_REUSED` 메시지 확장, 테스트 `keyReusedWithDifferentAmountIsRejected`. 결제 패키지 테스트 117개 통과. 4-2+ `[x]`.
