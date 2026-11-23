@@ -280,6 +280,54 @@
 - 세 버전을 한 줄로 정리하면: **A는 "재고 경합 비용(PG 낭비, 진 요청 지연)"을 없앴고, B는 "요청이 상품 행 하나에 몰리지 않을 때의 커넥션 대기"를 절반으로 줄였다.** (재고 경합 유무와 상관없음) 서로 다른 비용을 줄였다. 상품 행 하나에 몰리면 B의 효과는 사라지고, 재고 경합까지 겹치면(C200-집중) 손해를 봤다.
 - H200-공유에서 X가 A보다 느린 이유로 보이는 것: X는 PG에서 돌아온 200건이 한꺼번에 `complete`(상품 행 락)로 몰린다. A는 요청이 들어오는 대로 `startPaying`에서 상품 행을 지나가서, 한꺼번에 몰리는 순간이 없다.
 
+### 1-8-T1. 트랜잭션·SQL 수 실측 (2026-11-23)
+
+**조건:** X(`2f25076`)·A(`5e7823f`)는 worktree, B는 `49f0371`(B 측정 이후 `src/` 변경 없음). 각 버전 DB(`payment_x`/`payment_a`/`payment_b`). PG 지연 0, SQL 로그(`org.hibernate.SQL=debug`), Hibernate 세션 통계, `JpaTransactionManager=debug`. 시간은 재지 않았다.
+**방법:** `zsh k6/t1-single.sh <서버 로그> <결과 폴더>`로 H1을 2회, L1(같은 상품에 주문 2건 순차)을 2회 보내고, 승인 요청 1건 동안의 서버 로그만 잘라 `python3 -I k6/t1_summary.py <결과 폴더>`로 집계했다. 요청 스레드의 로그만 본다.
+**확인:** 세 버전 모두 1회차와 2회차가 같다. (첫 요청에 초기화 쿼리가 섞이지 않았다) 모든 트랜잭션에서 SQL 로그 수 = Hibernate 통계의 실행 문장 수, 커넥션 획득은 트랜잭션당 1회.
+
+| | 이긴 요청: 트랜잭션 / SQL | 진 요청: 트랜잭션 / SQL | 진 요청에서 롤백된 트랜잭션 |
+|---|---|---|---|
+| X | 4 / 12 | 5 / 12 | `complete` (재고 부족) |
+| A | 4 / 12 | 3 / 7 | `startPaying` (재고 부족) |
+| B | **2 / 10** | **1 / 5** | 없음 (실패 기록 후 커밋) |
+
+추정치(이긴 요청 X 4 / A 4 / B 2, 진 요청 X 5 / A 3 / B 1)가 모두 맞았다.
+
+**트랜잭션별 SQL** (`[락]` = 상품 행 `FOR UPDATE`부터 커밋·롤백까지 나간 SQL. UPDATE는 커밋 직전 flush에서 나간다)
+
+X — 이긴 요청
+1. `begin` 커밋: SELECT orders FOR UPDATE → SELECT idempotency_key → INSERT idempotency_key
+2. `startPaying` 커밋: SELECT orders FOR UPDATE → UPDATE orders
+3. `complete` 커밋: SELECT orders FOR UPDATE → INSERT payment → SELECT product FOR UPDATE → UPDATE orders `[락]` → UPDATE product `[락]`
+4. `succeed` 커밋: SELECT idempotency_key → UPDATE idempotency_key
+
+X — 진 요청: 1·2는 같음 → 3. `complete` **롤백**: SELECT orders FOR UPDATE → INSERT payment → SELECT product FOR UPDATE (재고 부족, INSERT도 롤백) → (PG 취소) → 4. `revertToPending` 커밋: SELECT orders FOR UPDATE → UPDATE orders → 5. `fail` 커밋: SELECT idempotency_key → UPDATE idempotency_key
+
+A — 이긴 요청
+1. `begin` 커밋: X와 같음
+2. `startPaying` 커밋: SELECT orders FOR UPDATE → SELECT product FOR UPDATE → UPDATE orders `[락]` → UPDATE product `[락]`
+3. `complete` 커밋: SELECT orders FOR UPDATE → INSERT payment → UPDATE orders
+4. `succeed` 커밋: X와 같음
+
+A — 진 요청: 1. `begin` 커밋 → 2. `startPaying` **롤백**: SELECT orders FOR UPDATE → SELECT product FOR UPDATE (재고 부족) → 3. `fail` 커밋: SELECT idempotency_key → UPDATE idempotency_key
+
+B — 이긴 요청
+1. `startPaying` 커밋: SELECT payment (멱등키) → SELECT orders FOR UPDATE → SELECT product FOR UPDATE → INSERT payment `[락]` → UPDATE orders `[락]` → UPDATE product `[락]`
+2. `complete` 커밋: SELECT orders FOR UPDATE → SELECT payment → UPDATE orders → UPDATE payment
+
+B — 진 요청
+1. `startPaying` **커밋**: SELECT payment (멱등키) → SELECT orders FOR UPDATE → SELECT product FOR UPDATE → INSERT payment `[락]` (FAILED) → UPDATE orders `[락]` (FAILED)
+
+**확인한 것**
+- **상품 행 락을 쥔 채 나가는 SQL:** 진 요청 기준 X 0개(바로 롤백), A **0개(바로 롤백)**, B **2개(INSERT payment, UPDATE orders) + COMMIT**. 1-8-A에서 추정한 "B의 진 요청은 상품 행을 잠근 채 실패 기록을 쓰고 커밋한다"가 SQL로 확인됐다. C200-집중에서 B만 진 요청이 한 줄로 2ms 간격으로 끝난 것(로그 타임스탬프)과 맞는다.
+- 이긴 요청도 B는 상품 행 락 안에서 INSERT payment가 하나 더 나간다. (A는 UPDATE 2개, B는 INSERT 1 + UPDATE 2) A의 INSERT payment는 PG 뒤 `complete`에 있다.
+- X의 진 요청은 `complete`에서 INSERT payment를 보낸 뒤 롤백한다. (IDENTITY라 즉시 INSERT, granularity 2-1에서 본 "결제 ID가 비는" 원인)
+- B는 SQL 수가 크게 줄지 않았다. 이긴 요청 12 → 10개. 트랜잭션 수(4 → 2)만큼 줄어든 것은 커넥션 획득·BEGIN·COMMIT 왕복이다.
+
+**해석 (확인하지 않음)**
+- C200-집중의 B 손해를 줄이려면 진 요청이 상품 행 락을 쥔 구간에서 쓰기와 커밋을 빼야 한다. (예: 재고 확인 전에 실패 기록 대상을 정해 두고, 상품 행은 마지막에 잠그거나, 품절 상품은 락 전에 거절) 개선이므로 지시 전까지 적용하지 않는다.
+
 ---
 
 # 2부. 이전 측정 (조사하면서 수행한 테스트)
