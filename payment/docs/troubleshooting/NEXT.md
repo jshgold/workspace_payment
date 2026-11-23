@@ -24,7 +24,7 @@
 7. [ ] 버전별로 전체 시나리오 측정, `test-list.md` 1-8에 기록 — 순서를 "버전 하나씩 전부"로 바꿨다 (서버 전환 3번). 버전별 빈 DB `payment_b`/`payment_a`/`payment_x`는 사용자가 만들었다(2026-11-22). 접속 DB는 `application-local.yaml`의 URL로 바꾼다.
    - [x] B (`payment_b`) — 2026-11-22, `test-list.md` 1-8-B. 주요 발견: 동시 200건에서 상품을 나누면 395ms, 한 상품이면 590ms. 2-7의 "상품 행 락 대기 거의 없음"은 틀린 것으로 보임
    - [x] A (`5e7823f` worktree + `payment_a`) — 2026-11-23, `test-list.md` 1-8-A. 주요 발견: 상품을 나눈 200건에서 A 480 → B 395ms(커넥션 대기 절반). 상품 하나면 A·B 같음(588/590ms). C200-집중은 A가 빠름. worktree는 세션 임시 폴더 `wt-a` (정리 전)
-   - [ ] X (`2f25076` worktree + `payment_x`)
+   - [x] X (`2f25076` worktree + `payment_x`) — 2026-11-23, `test-list.md` 1-8-X (X→A→B 비교표 포함). 주요 발견: A는 경합 비용(진 요청 655~792 → 18~230ms, PG 낭비 0)을, B는 상품 행 하나에 몰리지 않은 200건의 커넥션 대기를 절반으로 줄였다(재고 경합 있는 C200-분산도 절반). H200-공유는 X 701 → A 588ms. worktree는 세션 임시 폴더 `wt-x` (정리 전)
    - 실행은 시나리오 순서 고정 스크립트로 한다. `zsh k6/run-all.sh <결과 폴더>` → `python3 -I k6/summarize.py <결과 폴더> <서버 로그> k6/analyze_timing.py` (2026-11-23 세션 임시 폴더에서 `k6/`로 옮김. B 원본으로 다시 집계해 같은 결과 확인)
    - A·X 코드는 `git worktree add <폴더> <커밋>`으로 다른 폴더에 꺼내 띄운다. 지금 작업 폴더는 바뀌지 않는다. 끝나면 `git worktree remove <폴더>`.
 8. [ ] T1: 트랜잭션 수 실측 (SQL 로그·Hibernate 통계, 시간 측정과 따로)
