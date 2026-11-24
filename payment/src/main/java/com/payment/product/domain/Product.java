@@ -113,7 +113,7 @@ public class Product {
      * "실패 기록 후 커밋"으로 처리하기 위해 쓴다. 판정 기준은 decreaseStock과 같다.
      */
     public boolean canDecreaseStock(int quantity) {
-        return !isDeleted() && quantity > 0 && status != ProductStatus.STOPPED && stock >= quantity;
+        return new ProductStockSnapshot(stock, status, deletedAt).canDecreaseStock(quantity);
     }
 
     /**
