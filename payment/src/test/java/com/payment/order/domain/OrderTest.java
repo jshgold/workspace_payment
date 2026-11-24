@@ -210,6 +210,33 @@ class OrderTest {
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELING);
     }
 
+    @Test
+    @DisplayName("CANCELING 주문은 취소 결과 모름(CANCEL_UNKNOWN)이 되고, 그 상태에서는 다시 취소를 시작하거나 PAID로 되돌릴 수 없다")
+    void markCancelUnknown() {
+        // given
+        Order order = paidOrder();
+        order.startCanceling();
+
+        // when
+        order.markCancelUnknown();
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCEL_UNKNOWN);
+        assertThatThrownBy(order::startCanceling).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(order::revertToPaid).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(order::markCanceled).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("CANCELING이 아닌 주문(PAID)은 취소 결과 모름으로 바꿀 수 없다")
+    void markCancelUnknownFailsWhenNotCanceling() {
+        // given
+        Order paid = paidOrder();
+
+        // when // then
+        assertThatThrownBy(paid::markCancelUnknown).isInstanceOf(IllegalStateException.class);
+    }
+
     private Order paidOrder() {
         Order order = Order.create(1L, product(5), 1);
         order.startPaying();

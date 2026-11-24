@@ -12,12 +12,14 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
+import com.payment.payment.domain.PgCancelResult;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 토스페이먼츠 실제 연동 구현체. {@code app.pg.provider=toss}(= {@code toss} 프로필)일 때만 빈으로 등록된다.
  * <p>
- * 승인은 {@code POST /v1/payments/confirm} 이다. 취소는 4-3에서 채운다.
+ * 승인은 {@code POST /v1/payments/confirm}, 취소는 {@code POST /v1/payments/{paymentKey}/cancel} 이다. (취소 분류는 {@link #cancel})
  *
  * <h3>응답 분류: "돈이 나갔는지 아는가"</h3>
  * <pre>
@@ -47,6 +49,15 @@ public class TossPaymentClient implements PaymentClient {
 
     private static final String CONFIRM_PATH = "/v1/payments/confirm";
     private static final String STATUS_DONE = "DONE";
+    private static final String CANCEL_PATH = "/v1/payments/{paymentKey}/cancel";
+    private static final String STATUS_CANCELED = "CANCELED";
+
+    /** 전액 환불이 이미 끝났다는 뜻의 취소 응답 코드. 실패가 아니라 성공으로 본다. (intent 8절) */
+    private static final Set<String> ALREADY_CANCELED_CODES = Set.of("ALREADY_CANCELED_PAYMENT", "ALREADY_REFUND_PAYMENT");
+
+    /** 4xx지만 앞선 요청이 처리됐는지 알 수 없는 취소 응답 코드. 일시 오류, 반복 요청 차단, 멱등 요청 처리 중. */
+    private static final Set<String> CANCEL_UNKNOWN_RESULT_CODES =
+            Set.of("PROVIDER_ERROR", "FORBIDDEN_CONSECUTIVE_REQUEST", "IDEMPOTENT_REQUEST_PROCESSING");
 
     /**
      * 요청이 승인 단계까지 가지 못한 우리 쪽 연동 문제(키 오류). 구매자 거절이 아니다.
@@ -101,9 +112,74 @@ public class TossPaymentClient implements PaymentClient {
         }
     }
 
+    /**
+     * {@code POST /v1/payments/{paymentKey}/cancel}로 전액 취소한다. ({@code cancelAmount}를 보내지 않으면 전액 취소)
+     * 분류는 승인과 같은 원칙("돈이 돌아갔는지 아는가")을 따른다.
+     * <pre>
+     * 2xx + status=CANCELED                          → 성공
+     * ALREADY_CANCELED_PAYMENT, ALREADY_REFUND_PAYMENT → 성공 (전액 취소뿐이라 "이미 취소됨" = 환불 끝남)
+     * 401, 키 오류, 연결 실패                          → 요청이 닿지 않음 (PaymentGatewayException). 결제 살아 있음
+     * 5xx, 409, 일시 오류·반복 요청 코드, 읽기 타임아웃 → 결과 모름 (PaymentTimeoutException)
+     * 2xx인데 본문이 이상함                            → 결과 모름. 취소됐을 수 있다
+     * 그 밖의 4xx                                     → 명확한 거절 (PaymentCancelDeclinedException). 결제 살아 있음
+     * </pre>
+     * "이미 취소됨"을 거절로 보면, 응답 유실 뒤 다시 취소했을 때 환불이 끝난 주문을 PAID로 되돌리게 된다.
+     */
     @Override
-    public void cancel(String pgTransactionId, String reason) {
-        throw new UnsupportedOperationException("토스 취소 연동은 phase-04 4-3에서 구현한다.");
+    public PgCancelResult cancel(String paymentKey, String reason) {
+        try {
+            return tossRestClient.post()
+                    .uri(CANCEL_PATH, paymentKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(new CancelBody(reason))
+                    .exchange((httpRequest, response) -> toCancelResult(paymentKey, response));
+        } catch (ResourceAccessException e) {
+            if (isNotDelivered(e)) {
+                log.warn("토스 취소 호출 연결 실패. 요청이 PG에 닿지 않았다. paymentKey={}", paymentKey, e);
+                throw new PaymentGatewayException(CONNECTION_FAILED);
+            }
+            log.warn("토스 취소 호출 중 네트워크 오류. 취소 여부를 알 수 없다. paymentKey={}", paymentKey, e);
+            throw new PaymentTimeoutException();
+        } catch (RestClientException e) {
+            log.warn("토스 취소 응답 처리 중 오류. 취소 여부를 알 수 없다. paymentKey={}", paymentKey, e);
+            throw new PaymentTimeoutException();
+        }
+    }
+
+    private PgCancelResult toCancelResult(String paymentKey, RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response)
+            throws java.io.IOException {
+        int status = response.getStatusCode().value();
+
+        if (response.getStatusCode().is2xxSuccessful()) {
+            TossCancelPayment body = readBody(response, TossCancelPayment.class);
+            if (body == null || !STATUS_CANCELED.equals(body.status())) {
+                log.error("토스 취소 응답이 비정상이다. 취소 여부를 알 수 없다. paymentKey={}, status={}, body.status={}",
+                        paymentKey, status, body == null ? null : body.status());
+                throw new PaymentTimeoutException();
+            }
+            return PgCancelResult.canceled();
+        }
+
+        TossError error = readBody(response, TossError.class);
+        String code = error == null ? null : error.code();
+        String message = error == null || error.message() == null ? "사유를 알 수 없습니다." : error.message();
+
+        if (code != null && ALREADY_CANCELED_CODES.contains(code)) {
+            log.info("토스가 이미 취소된 결제라고 답했다. 취소 성공으로 본다. paymentKey={}, code={}", paymentKey, code);
+            return PgCancelResult.wasAlreadyCanceled();
+        }
+
+        log.warn("토스 취소 실패 응답. paymentKey={}, status={}, code={}, message={}", paymentKey, status, code, message);
+        if (status >= 500 || status == 409 || (code != null && CANCEL_UNKNOWN_RESULT_CODES.contains(code))) {
+            throw new PaymentTimeoutException();
+        }
+        if (status == 401 || (code != null && CONFIG_ERROR_CODES.contains(code))) {
+            throw new PaymentGatewayException(code == null ? "HTTP " + status : code);
+        }
+        if (status >= 400) {
+            throw new PaymentCancelDeclinedException(code == null ? "HTTP " + status : code, message);
+        }
+        throw new PaymentTimeoutException();
     }
 
     private PgApproveResult toResult(PgApproveRequest request, RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response)
@@ -160,6 +236,13 @@ public class TossPaymentClient implements PaymentClient {
     }
 
     private record ConfirmBody(String paymentKey, String orderId, long amount) {
+    }
+
+    private record CancelBody(String cancelReason) {
+    }
+
+    /** 취소 성공 응답(Payment 객체) 중 상태만 읽는다. */
+    private record TossCancelPayment(String paymentKey, String status) {
     }
 
     /** 승인 성공 응답(Payment 객체) 중 필요한 필드만 읽는다. 새 필드가 추가되어도 영향받지 않는다. */

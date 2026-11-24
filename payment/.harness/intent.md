@@ -47,7 +47,7 @@
 - **PaymentCancelStatus:**
   - `REQUESTED`(PG 취소 요청 중)
   - `UNKNOWN`(취소 결과 모름. 대사로 확정)
-  - `COMPLETED`(취소 완료. PG `ALREADY_CANCELED_PAYMENT` 포함)
+  - `COMPLETED`(취소 완료. PG `ALREADY_CANCELED_PAYMENT`·`ALREADY_REFUND_PAYMENT` 포함)
   - `FAILED`(취소 실패 확정. 결제는 살아 있다. `failure_code` 기록)
 - **"진행 중"과 "결과 모름"을 구분하는 이유:** 대사 대상을 시간 추측이 아니라 상태로 고를 수 있고, 화면에서 "결제 중"과 "결제 확인 중"을 나눌 수 있으며, 결과 모름 건수가 PG 장애 지표가 된다.
 
@@ -115,7 +115,7 @@
 | 결과 모름 대사 (4-4) | `UNKNOWN → COMPLETED` / `UNKNOWN → FAILED` | 주문 `CANCEL_UNKNOWN → CANCELED`(재고 복구) / `→ PAID` |
 | 서버 중단 추정 대사 (4-4) | `REQUESTED`(N분 경과) `→ COMPLETED` / `→ FAILED` | 주문 `CANCELING → CANCELED`(재고 복구) / `→ PAID` |
 
-- PG 취소 응답이 `ALREADY_CANCELED_PAYMENT`이면 성공으로 본다. 첫 시도에서 이 응답이 오면 `log.warn`을 남긴다.
+- PG 취소 응답이 `ALREADY_CANCELED_PAYMENT` 또는 `ALREADY_REFUND_PAYMENT`이면 성공으로 본다. 첫 시도에서 이 응답이 오면 `log.warn`을 남긴다.
 - 같은 키 재요청: 다른 주문·사유면 `IDEMPOTENCY_KEY_REUSED`(422), `COMPLETED`면 첫 결과, `FAILED`면 같은 실패, `REQUESTED`/`UNKNOWN`이면 409 처리 중.
 - 새 키 요청: 주문이 `PAID`면 새 시도, `CANCELING`/`CANCEL_UNKNOWN`이면 409 처리 중, `CANCELED`면 409 이미 취소됨, 그 밖의 상태면 409 취소할 수 없음. (기록하지 않음)
 - `failure_code`에는 `ErrorCode` 이름을 저장한다. 같은 키의 재요청에 같은 에러를 돌려줄 때 그대로 쓴다.
@@ -160,7 +160,8 @@ phase 파일의 "시작 전에 정할 것"이나 설계 변경으로 정한 내�
 | `idempotency_key` 테이블 | V9에서 `payment.idempotency_key`로 이관 후 삭제 (사용자 승인 2026-11-20) | | phase-04 4-2+ |
 | 같은 키 + 다른 금액 재요청 | 거절: `IDEMPOTENCY_KEY_REUSED`(422)를 같이 쓰고 메시지를 "같은 멱등키로 다른 내용의 요청이 왔습니다."로 넓힘. 단, 요청 금액 불일치(`PAYMENT_REQUEST_AMOUNT_MISMATCH`)로 실패한 시도는 금액을 비교하지 않고 같은 실패를 돌려준다 (클라이언트 금액을 저장하지 않아 재전송과 구별할 수 없으므로) | (사용자 작성) | phase-04 4-2+ (2026-11-20) |
 | 품절 폭주 대응 | **락 전 재고 조회**: `startPaying`에서 상품 행을 잠그기 직전에 재고·상태·삭제 여부를 락 없이 값으로만 읽어, 확실히 안 되면 상품 행 락 없이 실패를 기록한다. 통과한 요청은 지금처럼 락 후 다시 판정한다. 스냅샷이 낡아 생기는 빡빡한 거절은 감수한다. 비관적 락 구현에만 넣고, 원자적 쿼리 구현에는 넣지 않는다 (`docs/troubleshooting/payment-precheck-stock.md`) | (사용자 작성) | phase-04 트러블슈팅 (2026-11-24) |
-| PG "이미 취소된 결제" 응답 (`ALREADY_CANCELED_PAYMENT`) | 취소 성공으로 간주: `CANCELED` + 재고 복구. 부분 취소가 없으므로 "이미 취소됨" = 전액 환불됨. 주로 취소 응답 유실 후 다시 취소할 때 생기고, 첫 취소에서 오면 우리가 모르는 경로(상점관리자 등)로 취소된 것이므로 `log.warn`을 남긴다 | (사용자 작성) | phase-04 4-3 (2026-11-25) |
+| PG "이미 취소된 결제" 응답 (`ALREADY_CANCELED_PAYMENT`, `ALREADY_REFUND_PAYMENT`) | 취소 성공으로 간주: `CANCELED` + 재고 복구. 부분 취소가 없으므로 "이미 취소됨" = 전액 환불됨. 주로 취소 응답 유실 후 다시 취소할 때 생기고, 첫 취소에서 오면 우리가 모르는 경로(상점관리자 등)로 취소된 것이므로 `log.warn`을 남긴다 | (사용자 작성) | phase-04 4-3 (2026-11-25) |
 | 취소 멱등키 적용 | 적용: 취소 요청에 `Idempotency-Key` 필수. 같은 키 + 같은 내용은 첫 결과 replay, 같은 키 + 다른 주문·사유는 `IDEMPOTENCY_KEY_REUSED`(422) 거절 + `log.warn`. 중복 PG 호출은 상태 선점(`PAID → CANCELING`)이 막고, 키는 재시도와 새 요청을 구분해 replay와 이상 감지를 맡는다 (phase-03의 "취소는 키 없음" 결정을 바꿈) | (사용자 작성) | phase-04 4-3 (2026-11-25) |
 | 취소 시도 기록 | `payment_cancel` 테이블 신설(V10, Order 1:N, `idempotency_key` UNIQUE). 사용자 취소만 기록하고 보상 취소는 기록하지 않음. 주문 상태가 바뀌지 않는 거절(이미 `CANCELED` 등)은 기록 없이 409 | (사용자 작성) | phase-04 4-3 (2026-11-25) |
+| 실제 PG 확인 시점 | 4-3~4-5는 가짜 PG로 개발하고, 실제 토스 호출 확인은 4-6 수동 E2E에 모아서 한다 | (사용자 작성) 이전 테스트 중 토스에서 요청이 차단된 적이 있다 | phase-04 4-3 (2026-11-25) |
 | 만료·대사 기준 시간 N | (4-4에서 결정) | | phase-04 |

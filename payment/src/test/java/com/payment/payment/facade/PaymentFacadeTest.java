@@ -13,7 +13,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import com.payment.common.exception.BusinessException;
 import com.payment.common.exception.ErrorCode;
 import com.payment.order.domain.OrderStatus;
-import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
@@ -197,10 +197,10 @@ class PaymentFacadeTest {
             // given
             startPayingProceeds();
             given(paymentClient.approve(any())).willReturn(new PgApproveResult(PAYMENT_KEY, AMOUNT - 1));
-            willThrow(new PaymentCancelFailedException(PAYMENT_KEY)).given(paymentClient).cancel(anyString(), anyString());
+            willThrow(new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.")).given(paymentClient).cancel(anyString(), anyString());
 
             // when // then
-            assertThatThrownBy(() -> approve()).isInstanceOf(PaymentCancelFailedException.class);
+            assertThatThrownBy(() -> approve()).isInstanceOf(PaymentCancelDeclinedException.class);
             verify(paymentStateService).markUnknown(ORDER_ID, ErrorCode.PAYMENT_CANCEL_FAILED, AMOUNT - 1);
             verify(paymentStateService, never()).fail(any(), any(), any());
         }
