@@ -134,5 +134,6 @@ phase 파일의 "시작 전에 정할 것"이나 설계 변경으로 정한 내�
 | `payment` 컬럼 | `pg_transaction_id` → `payment_key`, `approved_amount`·`updated_at` 추가 | (사용자 작성) | phase-04 4-2+ |
 | `idempotency_key` 테이블 | V9에서 `payment.idempotency_key`로 이관 후 삭제 (사용자 승인 2026-11-20) | | phase-04 4-2+ |
 | 같은 키 + 다른 금액 재요청 | 거절: `IDEMPOTENCY_KEY_REUSED`(422)를 같이 쓰고 메시지를 "같은 멱등키로 다른 내용의 요청이 왔습니다."로 넓힘. 단, 요청 금액 불일치(`PAYMENT_REQUEST_AMOUNT_MISMATCH`)로 실패한 시도는 금액을 비교하지 않고 같은 실패를 돌려준다 (클라이언트 금액을 저장하지 않아 재전송과 구별할 수 없으므로) | (사용자 작성) | phase-04 4-2+ (2026-11-20) |
+| 품절 폭주 대응 | **락 전 재고 조회**: `startPaying`에서 상품 행을 잠그기 직전에 재고·상태·삭제 여부를 락 없이 값으로만 읽어, 확실히 안 되면 상품 행 락 없이 실패를 기록한다. 통과한 요청은 지금처럼 락 후 다시 판정한다. 스냅샷이 낡아 생기는 빡빡한 거절은 감수한다. 비관적 락 구현에만 넣고, 원자적 쿼리 구현에는 넣지 않는다 (`docs/troubleshooting/payment-precheck-stock.md`) | (사용자 작성) | phase-04 트러블슈팅 (2026-11-24) |
 | 취소 멱등키 적용 | (4-3에서 결정) | | phase-04 |
 | 만료·대사 기준 시간 N | (4-4에서 결정) | | phase-04 |
