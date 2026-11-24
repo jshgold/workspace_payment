@@ -1,14 +1,34 @@
-# 트러블슈팅 이어서 하기 (작업 인계)
+# 결제 트러블슈팅 기록과 측정 방법
 
-> 마지막 갱신: 2026-11-21. 새 세션은 이 파일부터 읽고 시작한다.
-> 이 작업은 phase-04 체크리스트 밖의 트러블슈팅이다. 개선 A는 적용·merge했고, 개선 B는 phase-04 **4-2+(결제 모델 재설계)**에 포함해 진행한다. (3번 참고)
+> 마지막 갱신: 2026-11-24. **트러블슈팅 종료.** 이제 세션 시작 때 읽을 필요는 없다. 측정을 다시 할 때 4절(실행 방법)을 참고한다.
+> 이 작업은 phase-04 체크리스트 밖의 트러블슈팅이다. 개선 A(재고 선차감), B(phase-04 4-2+ 결제 모델 재설계), P(락 전 재고 조회)를 모두 적용해 `main`에 merge했다.
 
-## 0. 지금 할 일 (2026-11-21)
+## 0. 지금 할 일 (2026-11-24)
 
-**X / A / B를 같은 조건으로 다시 재서 트러블슈팅을 닫는다. 그다음 phase-04 4-3으로 넘어간다.**
+**트러블슈팅은 닫혔다. 다음은 phase-04 4-3(취소 연동)이다.** (`.harness/phases/phase-04.md`)
+
+**지금 상태**
+- 버전: X(`2f25076`) → A(`5e7823f`) → B(`f381e59`) → **P(`b67403e`, `main`에는 `a7a2648`로 squash merge)**. 지금 `main`이 P다.
+- P 채택: 같은 날 B ↔ P 비교(`payment-precheck-stock.md` 8-3)를 보고 사용자가 **P로 결정**했다. (2026-11-24) 결정 기록은 `intent.md` 8절 "품절 폭주 대응".
+  - 비용: 결제가 커넥션 풀을 꽉 채울 만큼 몰릴 때 해피 케이스 +2~6%. 효과: 품절 상품에 몰릴 때 진 요청 응답과 다른 API 지연이 약 1/3.
+- 측정용 worktree(`wt-a`, `wt-x`, `wt-b`, `wt-p`)는 모두 지웠다. (2026-11-24) 다시 필요하면 4절 "다른 버전 띄우기".
+- 로컬 서버(`application-local.yaml`)는 `payment_p` DB를 본다. 버전별 DB `payment_x`/`payment_a`/`payment_b`/`payment_p`는 남아 있다. (측정 데이터, 지울 때만 승인)
+
+**사용자 결정·작성 대기**
+- `intent.md` 8절 이유 칸: "같은 키 + 다른 금액 재요청", "품절 폭주 대응", "보상 취소 실패", "`payment` 컬럼" 등 `(사용자 작성)`으로 남은 줄
+- `payment-precheck-stock.md` 8-3에는 "P로 결정"이라는 결론 문장이 아직 없다. (넣을지는 사용자가 정한다)
+- 로컬 `feat/08` 브랜치: squash merge라 `git branch -d`로 안 지워질 수 있다. `-D`는 승인 필요.
+
+**남은 후보 (지금 할 일 아님, `payment-x-a-b-summary.md` 6절)**
+- 인기 상품 몰림(H200-공유): 상품 하나당 초당 약 400건 상한. 구조 변경(재고 나누기, Redis)은 필요해지면.
+- 다른 상품 결제와 섞은 혼합 시나리오는 아직 재지 않았다.
+- `Product.version` 제거 예정 (지금은 유지).
+
+## 0-1. 지난 기록: X / A / B 재측정 (2026-11-21 ~ 23, 완료)
+
 계획은 `test-list.md` 1부에 있다. (시나리오, 측정 버전, 고정 조건, 지표, 실행 명령)
 
-**왜 다시 재나 (사용자와 합의한 것)**
+**왜 다시 쟀나 (사용자와 합의한 것)**
 - 이전 측정은 질문이 생길 때마다 만든 테스트라 버전마다 시나리오·횟수·지표가 다르다. (A 단건은 1회, 구간별 값 없음 / B 트랜잭션 수는 실측 안 함)
 - X, A, B는 "승인 흐름만 있는 같은 단계"의 세 버전이라, 비교도 이 단계에서 끝낸다. phase-04를 끝낸 뒤 재면 다른 버전이 된다. (최종 버전 측정은 그때 별도 기준선으로)
 - 이전 해피 케이스는 모두 상품 1개라 커넥션 대기와 상품 행 락 대기가 섞여 있었다. 이번에는 "상품 여러 개에 나눠 요청"으로 둘을 나눈다. (시나리오는 사용자가 제안)
@@ -18,23 +38,28 @@
 1. [x] 시나리오 목록 확정 (`test-list.md` 1-5)
 2. [x] X·A·B 승인 API 형식 비교 → 같음, k6 스크립트 하나로 잰다 (1-7)
 3. [x] k6 `stock-contention.js`에 `PRODUCTS`, `SEQUENTIAL` 옵션 추가 (`k6 inspect`로만 확인, 실제 실행은 아직)
-4. [ ] 반복 실행(워밍업 + 3회)과 실행 구간 구분 방법 — 같은 명령 4번 + 출력되는 orderId 범위로 `analyze_timing.py` 집계하는 방안
-5. [ ] 버전별 worktree와 빈 DB 준비 방법 결정 — 로컬 DB는 V9 적용돼 X(`2f25076`)·A(`5e7823f`)가 뜨지 않는다. MySQL 안 새 스키마 vs 별도 컨테이너. 기존 `payment` DB는 건드리지 않는다. **방법을 정리해 사용자에게 먼저 확인받는다.**
+4. [x] 반복 실행(워밍업 + 3회)과 실행 구간 구분 — `k6/run-all.sh` + `k6/summarize.py`로 해결 (7번 참고)
+5. [x] 버전별 worktree와 빈 DB — 버전별 worktree + MySQL 안 버전별 DB(`payment_x`/`payment_a`/`payment_b`)로 했다. 기존 `payment` DB는 건드리지 않았다.
 6. [x] 작은 시나리오(H1, L1, C2)로 스크립트·집계 동작 확인 (2026-11-22, B) — 정상. 재기동 직후 첫 요청이 크게 느려 워밍업 필수.
 7. [ ] 버전별로 전체 시나리오 측정, `test-list.md` 1-8에 기록 — 순서를 "버전 하나씩 전부"로 바꿨다 (서버 전환 3번). 버전별 빈 DB `payment_b`/`payment_a`/`payment_x`는 사용자가 만들었다(2026-11-22). 접속 DB는 `application-local.yaml`의 URL로 바꾼다.
    - [x] B (`payment_b`) — 2026-11-22, `test-list.md` 1-8-B. 주요 발견: 동시 200건에서 상품을 나누면 395ms, 한 상품이면 590ms. 2-7의 "상품 행 락 대기 거의 없음"은 틀린 것으로 보임
-   - [x] A (`5e7823f` worktree + `payment_a`) — 2026-11-23, `test-list.md` 1-8-A. 주요 발견: 상품을 나눈 200건에서 A 480 → B 395ms(커넥션 대기 절반). 상품 하나면 A·B 같음(588/590ms). C200-집중은 A가 빠름. worktree는 세션 임시 폴더 `wt-a` (정리 전)
-   - [x] X (`2f25076` worktree + `payment_x`) — 2026-11-23, `test-list.md` 1-8-X (X→A→B 비교표 포함). 주요 발견: A는 경합 비용(진 요청 655~792 → 18~230ms, PG 낭비 0)을, B는 상품 행 하나에 몰리지 않은 200건의 커넥션 대기를 절반으로 줄였다(재고 경합 있는 C200-분산도 절반). H200-공유는 X 701 → A 588ms. worktree는 세션 임시 폴더 `wt-x` (정리 전)
+   - [x] A (`5e7823f` worktree + `payment_a`) — 2026-11-23, `test-list.md` 1-8-A. 주요 발견: 상품을 나눈 200건에서 A 480 → B 395ms(커넥션 대기 절반). 상품 하나면 A·B 같음(588/590ms). C200-집중은 A가 빠름. (worktree 정리 완료)
+   - [x] X (`2f25076` worktree + `payment_x`) — 2026-11-23, `test-list.md` 1-8-X (X→A→B 비교표 포함). 주요 발견: A는 경합 비용(진 요청 655~792 → 18~230ms, PG 낭비 0)을, B는 상품 행 하나에 몰리지 않은 200건의 커넥션 대기를 절반으로 줄였다(재고 경합 있는 C200-분산도 절반). H200-공유는 X 701 → A 588ms. (worktree 정리 완료)
    - 실행은 시나리오 순서 고정 스크립트로 한다. `zsh k6/run-all.sh <결과 폴더>` → `python3 -I k6/summarize.py <결과 폴더> <서버 로그> k6/analyze_timing.py` (2026-11-23 세션 임시 폴더에서 `k6/`로 옮김. B 원본으로 다시 집계해 같은 결과 확인)
    - A·X 코드는 `git worktree add <폴더> <커밋>`으로 다른 폴더에 꺼내 띄운다. 지금 작업 폴더는 바뀌지 않는다. 끝나면 `git worktree remove <폴더>`.
 8. [x] T1: 트랜잭션 수 실측 (SQL 로그·Hibernate 통계, 시간 측정과 따로) — 2026-11-23, `test-list.md` 1-8-T1. 추정치 모두 맞음 (이긴 요청 X 4 / A 4 / B 2, 진 요청 X 5 / A 3 / B 1). B 진 요청만 상품 행 락을 쥔 채 INSERT payment·UPDATE orders·COMMIT. 스크립트 `k6/t1-single.sh`, `k6/t1_summary.py`
-9. [ ] 결과 정리 후 phase-04 4-3 진행
-   - 정리본: `payment-x-a-b-summary.md` (2026-11-24 작성, 7절 결론은 사용자 작성 대기)
+9. [x] 결과 정리 — `payment-x-a-b-summary.md` (2026-11-24, 7절 결론 사용자 작성 완료). 결론에서 나온 "품절 폭주" 후속으로 P를 진행했다. (아래 0-2)
 
-**같은 세션에서 한 다른 작업 (커밋 안 함)**
-- phase-04 4-2+ 마지막 항목 "같은 키 + 다른 금액" → 거절로 구현. `PaymentReplayer`에 금액 비교 추가(요청 금액 불일치로 실패한 시도는 제외), `IDEMPOTENCY_KEY_REUSED` 메시지 확장, 테스트 `keyReusedWithDifferentAmountIsRejected`. 결제 패키지 테스트 117개 통과. 4-2+ `[x]`.
-  - `intent.md` 8절 해당 줄의 **이유 칸은 사용자 작성 대기**.
+**같은 기간에 한 다른 작업 (모두 커밋됨)**
+- phase-04 4-2+ 마지막 항목 "같은 키 + 다른 금액" → 거절로 구현. `PaymentReplayer`에 금액 비교 추가(요청 금액 불일치로 실패한 시도는 제외), `IDEMPOTENCY_KEY_REUSED` 메시지 확장, 테스트 `keyReusedWithDifferentAmountIsRejected`. 4-2+ `[x]`.
 - `test-list.md` 새로 작성, `stock-contention.js` 옵션 추가.
+
+## 0-2. 지난 기록: P — 락 전 재고 조회 (2026-11-24, 완료)
+
+문서: `payment-precheck-stock.md` (설계 1~7절, 구현 8-1, 측정 8-2, 같은 날 B ↔ P 비교 8-3)
+- `PessimisticLockPaymentStateService.startPaying`에서 상품 행을 잠그기 직전에 재고·상태·삭제 여부를 락 없이 값(`ProductStockSnapshot`)으로 읽어, 확실히 안 되면 상품 행 락 없이 실패를 기록한다. 통과한 요청은 락 후 다시 판정한다. 비관적 락 구현에만 넣었다.
+- 8-3 측정 방법: B·P를 worktree로 띄워 **B1 → P → B2** 순서로 재고, B끼리 차이를 오차 범위로 봤다. 결과는 0절 "P 채택" 참고.
+- 커밋: `f47f51b`(설계) → `b67403e`(구현·측정) → `main` `a7a2648` (PR #8)
 
 ## 1. 진행 원칙 (사용자와 합의한 것)
 
@@ -53,6 +78,9 @@
 |---|---|---|
 | `payment-stock-deduction-timing.md` | **개선 A 적용·측정 완료** | 재고를 PG 승인 뒤에 차감 → 재고 1에 N건이면 PG 승인 N, 취소 N-1. A 적용 후 승인 1 / 취소 0. |
 | `payment-transaction-granularity.md` | **A 후 측정 완료, B는 4-2+에서** (병목 = 커넥션 풀, 2-7·2-8) | 이긴 요청 트랜잭션 4번, 매번 커넥션 대기. A 후 200건 요청당 커넥션 대기 264ms가 B의 "개선 전" 기준선. |
+| `test-list.md` | 완료 | X/A/B 재측정 계획(1부)과 결과(1-8) |
+| `payment-x-a-b-summary.md` | 완료 (2026-11-24) | X → A → B 정리본, 사용자 결론(7절) |
+| `payment-precheck-stock.md` | **P 적용·측정 완료, 채택** (2026-11-24) | 락 전 재고 조회. 품절 폭주 때 진 요청 응답·다른 API 지연 약 1/3 |
 | `product-list-pagination.md` | 완료 (phase-01) | 이번 작업과 무관 |
 
 ### 첫 번째 테스트: 경합 때 PG 호출 낭비 → `payment-stock-deduction-timing.md`
@@ -174,6 +202,13 @@ python3 -I k6/analyze_starvation.py <json 파일> <로그 파일>   # 상품 조
 ```
 - 건당 응답 시간은 k6 요약의 `approve_latency_success` / `approve_latency_failure`를 본다.
 - 구간별 집계: `python3 -I k6/analyze_timing.py <서버 로그> [--since-order-id N] [--until-order-id M]` — 결과별·구간별 평균/p50/p95/최대, DB 구간은 conn/commit/rest로 분해. 서버 로그는 `bootRun ... > <로그 파일> 2>&1`로 남긴다.
+- 시나리오 일괄 실행: `zsh k6/run-all.sh <결과 폴더>` → `python3 -I k6/summarize.py <결과 폴더> <서버 로그> k6/analyze_timing.py`
+- 트랜잭션·SQL 수 실측(T1): `k6/t1-single.sh`, `k6/t1_summary.py`
+
+**다른 버전 띄우기 (worktree)**
+- `git worktree add <세션 임시 폴더>/wt-<버전> <커밋>`으로 꺼내 그 폴더에서 `bootRun`한다. 지금 작업 폴더는 바뀌지 않는다.
+- DB는 버전별로 따로 쓴다. worktree 안 `application-local.yaml`의 URL을 해당 DB(`payment_x`/`payment_a`/`payment_b`/`payment_p`)로 바꾼다. (V9 이후 스키마라 X·A는 예전 DB에서 뜨지 않는다)
+- 끝나면 `git worktree remove <폴더>`. 지우기 전에 `git -C <폴더> status --short`로 남은 변경이 없는지 확인한다.
 
 **측정용 계측 (현재 코드에 있음)**
 - `FakePaymentClient`: `app.pg.fake.delay` 프로퍼티로 초기 지연 설정 (문자열로 받아 `DurationStyle`로 파싱. `Duration`으로 받으면 `PaymentClientSwitchTest`의 최소 컨텍스트에서 변환 실패함)
@@ -191,5 +226,6 @@ python3 -I k6/analyze_starvation.py <json 파일> <로그 파일>   # 상품 조
 
 - pre-push hook이 `./gradlew test` 전체를 돌린다. 메인/테스트 코드를 바꿨으면 푸시 전에 관련 테스트를 넓게 돌릴 것.
 - 2026-11-19 세션에서 계측 코드(`PaymentSegmentTimer`, `JdbcTiming*`)를 추가했고, 결제 관련 단위·통합 테스트 48개가 통과했다. 사용자가 커밋했다. (`4156c7b`, `2f25076`) 이후 개선 A(`7c545d4`)까지 포함해 전체 테스트를 사용자가 실행해 통과했다. (2026-11-20)
+- 지금 `application-local.yaml`은 `payment_p`를 본다. (2026-11-24, PR #8에서 바뀜)
 - 로컬 `payment` DB에 측정 데이터가 쌓여 있다: 상품 약 24개, 주문 약 5,400건(개선 A 측정분은 orderId 4136~5436). 전부 테스트 데이터이고, 사용자는 쌓이는 것을 신경 쓰지 않는다. 지울 때만 승인을 받는다.
 - 측정 원본 로그는 세션 임시 폴더에 있어 사라질 수 있다. 결과 수치는 문서에 모두 옮겨 두었다.
