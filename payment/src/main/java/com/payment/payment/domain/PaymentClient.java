@@ -17,9 +17,12 @@ public interface PaymentClient {
     PgApproveResult approve(PgApproveRequest request);
 
     /**
-     * 승인된 결제를 취소한다. (보상 작업, 결제 취소)
+     * 승인된 결제를 전액 취소한다. (보상 작업, 결제 취소)
+     * PG가 "이미 취소된 결제"라고 답하면 성공으로 돌려준다. 부분 취소가 없으므로 전액 환불이 끝난 것이다.
      *
-     * @throws PaymentCancelFailedException 취소에 실패함. 돈이 묶여 있을 수 있어 재시도나 대사가 필요하다.
+     * @throws PaymentCancelDeclinedException PG가 취소를 명확히 거절함. 결제는 그대로 살아 있다.
+     * @throws PaymentGatewayException        요청이 PG에 닿지 않았음이 확실함(연결 실패, 키 오류). 결제는 그대로 살아 있다.
+     * @throws PaymentTimeoutException        응답을 받지 못함. PG에서 취소됐는지 <b>알 수 없다</b>.
      */
-    void cancel(String pgTransactionId, String reason);
+    PgCancelResult cancel(String paymentKey, String reason);
 }

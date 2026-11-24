@@ -25,7 +25,7 @@ public enum OrderStatus {
     /** PG 취소 호출이 나가 있다. 서버가 이 상태에서 죽으면 대사가 필요하다. */
     CANCELING,
 
-    /** 취소 결과 모름. (4-3) */
+    /** 취소 결과 모름. 타임아웃·5xx로 취소 응답을 놓쳐 대사를 기다린다. 재고는 아직 복구하지 않았다. */
     CANCEL_UNKNOWN,
 
     CANCELED;

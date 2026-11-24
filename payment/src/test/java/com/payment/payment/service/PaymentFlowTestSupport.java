@@ -16,7 +16,7 @@ import com.payment.order.domain.Order;
 import com.payment.order.domain.OrderRepository;
 import com.payment.order.domain.OrderStatus;
 import com.payment.payment.domain.Payment;
-import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentRepository;
@@ -184,7 +184,7 @@ public abstract class PaymentFlowTestSupport extends IntegrationTestSupport {
 
         // when // then
         assertThatThrownBy(() -> approve(order, "payment-key-1"))
-                .isInstanceOf(PaymentCancelFailedException.class);
+                .isInstanceOf(PaymentCancelDeclinedException.class);
         assertThat(orderStatus(order)).isEqualTo(OrderStatus.PAYMENT_UNKNOWN);
         Payment payment = assertPayment(order, PaymentStatus.UNKNOWN, ErrorCode.PAYMENT_CANCEL_FAILED);
         assertThat(payment.getApprovedAmount()).isEqualTo(1L);

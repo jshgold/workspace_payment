@@ -158,6 +158,12 @@ public class Order {
         this.status = OrderStatus.CANCELED;
     }
 
+    /** PG 취소 응답을 놓쳐 취소 여부를 모른다. 재고는 복구하지 않고 대사를 기다린다. */
+    public void markCancelUnknown() {
+        assertStatus(OrderStatus.CANCELING, "취소 결과 모름으로 바꿀 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.CANCEL_UNKNOWN;
+    }
+
     /**
      * PG가 취소를 명확히 거절해 결제가 그대로 살아 있을 때 선점을 풀어 재시도를 허용한다.
      * 상태 전이표의 예외 간선이다. 확정된 결과를 지우는 것이 아니라 진행 중인 취소 시도가 무산된 것이다.

@@ -6,12 +6,14 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
+import com.payment.payment.domain.PaymentGatewayException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
+import com.payment.payment.domain.PgCancelResult;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,7 +26,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>{@link #willApprove()} / {@link #willDecline(String)} / {@link #willTimeout()}: 다음 승인 호출의 결과</li>
  *   <li>{@link #delay(Duration)}: 응답 지연. 승인·취소 모두에 적용된다. (DB 커넥션 점유 실험용)</li>
- *   <li>{@link #willFailCancel()}: 취소 호출이 실패하는 시나리오 (보상 작업 실패)</li>
+ *   <li>{@link #willFailCancel()} / {@link #willTimeoutCancel()} / {@link #willFailCancelConnection()} /
+ *       {@link #willAlreadyCanceled()}: 다음 취소 호출의 결과 (거절 / 결과 모름 / 연결 실패 / 이미 취소됨)</li>
  *   <li>{@link #willApproveWithAmount(long)}: 요청과 다른 금액으로 승인 (승인 후 보상 취소 경로 재현)</li>
  *   <li>{@link #approveCallCount()}: PG가 실제로 몇 번 호출됐는지. 멱등성 검증(3-4)의 핵심 증거</li>
  * </ul>
@@ -40,12 +43,14 @@ public class FakePaymentClient implements PaymentClient {
 
     private enum Scenario { APPROVE, DECLINE, TIMEOUT }
 
+    private enum CancelScenario { CANCEL, DECLINE, TIMEOUT, CONNECTION_FAILED, ALREADY_CANCELED }
+
     private final Duration initialDelay;
 
     private volatile Scenario scenario = Scenario.APPROVE;
     private volatile String declineReason = "한도 초과";
     private volatile Duration delay;
-    private volatile boolean cancelFails = false;
+    private volatile CancelScenario cancelScenario = CancelScenario.CANCEL;
     private volatile Long approvedAmountOverride = null;
 
     private final AtomicInteger approveCalls = new AtomicInteger();
@@ -99,8 +104,24 @@ public class FakePaymentClient implements PaymentClient {
         this.delay = delay;
     }
 
+    /** PG가 취소를 명확히 거절한다. 결제는 살아 있다. */
     public void willFailCancel() {
-        this.cancelFails = true;
+        this.cancelScenario = CancelScenario.DECLINE;
+    }
+
+    /** 취소 응답을 받지 못한다. PG에서는 취소됐을 수도 있다. */
+    public void willTimeoutCancel() {
+        this.cancelScenario = CancelScenario.TIMEOUT;
+    }
+
+    /** 연결이 맺어지지 않아 취소 요청이 PG에 닿지 않는다. */
+    public void willFailCancelConnection() {
+        this.cancelScenario = CancelScenario.CONNECTION_FAILED;
+    }
+
+    /** PG가 "이미 취소된 결제"라고 답한다. (우리가 모르는 경로로 이미 취소됨) */
+    public void willAlreadyCanceled() {
+        this.cancelScenario = CancelScenario.ALREADY_CANCELED;
     }
 
     public int approveCallCount() {
@@ -119,7 +140,7 @@ public class FakePaymentClient implements PaymentClient {
         this.scenario = Scenario.APPROVE;
         this.declineReason = "한도 초과";
         this.delay = initialDelay;
-        this.cancelFails = false;
+        this.cancelScenario = CancelScenario.CANCEL;
         this.approvedAmountOverride = null;
         approveCalls.set(0);
         cancelCalls.set(0);
@@ -139,13 +160,19 @@ public class FakePaymentClient implements PaymentClient {
     }
 
     @Override
-    public void cancel(String pgTransactionId, String reason) {
+    public PgCancelResult cancel(String paymentKey, String reason) {
         cancelCalls.incrementAndGet();
         simulateLatency();
-        if (cancelFails) {
-            throw new PaymentCancelFailedException(pgTransactionId);
-        }
-        canceledTransactionIds.add(pgTransactionId);
+        return switch (cancelScenario) {
+            case CANCEL -> {
+                canceledTransactionIds.add(paymentKey);
+                yield PgCancelResult.canceled();
+            }
+            case ALREADY_CANCELED -> PgCancelResult.wasAlreadyCanceled();
+            case DECLINE -> throw new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.");
+            case TIMEOUT -> throw new PaymentTimeoutException();
+            case CONNECTION_FAILED -> throw new PaymentGatewayException(TossPaymentClient.CONNECTION_FAILED);
+        };
     }
 
     private void simulateLatency() {

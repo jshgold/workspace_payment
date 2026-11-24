@@ -25,6 +25,8 @@ public enum ErrorCode {
     // 주문
     ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER_001", "주문을 찾을 수 없습니다."),
     ORDER_NOT_PAYABLE(HttpStatus.CONFLICT, "ORDER_002", "결제할 수 없는 주문입니다. 새 주문으로 결제해주세요."),
+    ORDER_ALREADY_CANCELED(HttpStatus.CONFLICT, "ORDER_003", "이미 취소된 주문입니다."),
+    ORDER_NOT_CANCELABLE(HttpStatus.CONFLICT, "ORDER_004", "취소할 수 없는 주문입니다."),
 
     // 결제 (PG)
     PAYMENT_AMOUNT_MISMATCH(HttpStatus.CONFLICT, "PAYMENT_004", "결제 승인 금액이 주문 금액과 일치하지 않습니다."),
@@ -34,7 +36,10 @@ public enum ErrorCode {
     PAYMENT_DECLINED(HttpStatus.PAYMENT_REQUIRED, "PAYMENT_001", "결제가 거절되었습니다."),
     PAYMENT_TIMEOUT(HttpStatus.GATEWAY_TIMEOUT, "PAYMENT_002", "결제사 응답이 지연되어 결제 결과를 확인할 수 없습니다."),
     PAYMENT_CANCEL_FAILED(HttpStatus.BAD_GATEWAY, "PAYMENT_003", "결제 취소에 실패했습니다."),
-    PAYMENT_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_008", "결제 서비스 연동에 문제가 있어 결제를 진행할 수 없습니다. 결제는 승인되지 않았습니다.");
+    PAYMENT_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_008", "결제 서비스 연동에 문제가 있어 결제를 진행할 수 없습니다. 결제는 승인되지 않았습니다."),
+    PAYMENT_CANCEL_DECLINED(HttpStatus.CONFLICT, "PAYMENT_009", "결제사가 취소를 거절했습니다. 결제는 취소되지 않았습니다."),
+    PAYMENT_CANCEL_UNKNOWN(HttpStatus.GATEWAY_TIMEOUT, "PAYMENT_010", "결제사 응답이 지연되어 취소 결과를 확인하고 있습니다."),
+    PAYMENT_CANCEL_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_011", "결제 서비스 연동에 문제가 있어 취소를 진행할 수 없습니다. 결제는 취소되지 않았습니다.");
 
     private final HttpStatus status;
     private final String code;

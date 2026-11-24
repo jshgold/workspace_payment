@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 
-import com.payment.payment.domain.PaymentCancelFailedException;
+import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentDeclinedException;
+import com.payment.payment.domain.PaymentGatewayException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
+import com.payment.payment.domain.PgCancelResult;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -97,16 +99,48 @@ class FakePaymentClientTest {
     }
 
     @Test
-    @DisplayName("취소 실패 시나리오에서는 PaymentCancelFailedException이 발생하고 취소 기록은 남지 않는다")
+    @DisplayName("취소 실패 시나리오에서는 PaymentCancelDeclinedException이 발생하고 취소 기록은 남지 않는다")
     void cancelFails() {
         // given
         client.willFailCancel();
 
         // when // then
         assertThatThrownBy(() -> client.cancel("fake-1", "재고 부족"))
-                .isInstanceOf(PaymentCancelFailedException.class);
+                .isInstanceOf(PaymentCancelDeclinedException.class);
         assertThat(client.cancelCallCount()).isEqualTo(1);
         assertThat(client.canceledTransactionIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("취소 타임아웃 시나리오에서는 PaymentTimeoutException, 연결 실패 시나리오에서는 PaymentGatewayException이 발생한다")
+    void cancelTimeoutAndConnectionFailure() {
+        // given
+        client.willTimeoutCancel();
+
+        // when // then
+        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+
+        // given
+        client.willFailCancelConnection();
+
+        // when // then
+        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심")).isInstanceOf(PaymentGatewayException.class);
+        assertThat(client.cancelCallCount()).isEqualTo(2);
+        assertThat(client.canceledTransactionIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("이미 취소됨 시나리오에서는 예외 없이 alreadyCanceled=true를 돌려준다")
+    void cancelAlreadyCanceled() {
+        // given
+        client.willAlreadyCanceled();
+
+        // when
+        PgCancelResult result = client.cancel("fake-1", "단순 변심");
+
+        // then
+        assertThat(result.alreadyCanceled()).isTrue();
+        assertThat(client.cancelCallCount()).isEqualTo(1);
     }
 
     @Test
