@@ -63,6 +63,14 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
             return rejectBeforePaying(order, command, ErrorCode.PAYMENT_REQUEST_AMOUNT_MISMATCH);
         }
 
+        // 락 전 재고 조회: 확실히 안 되면 상품 행 락 줄에 서지 않고 실패를 기록한다.
+        // 품절 폭주 때 진 요청이 락을 쥔 채 실패 기록·커밋을 하며 커넥션을 붙잡던 것을 막는다.
+        // (docs/troubleshooting/payment-precheck-stock.md)
+        if (isSurelyOutOfStock(order)) {
+            return rejectBeforePaying(order, command, ErrorCode.STOCK_NOT_AVAILABLE);
+        }
+
+        // 통과했어도 스냅샷은 낡았을 수 있으므로 락을 잡은 뒤 최신 값으로 다시 판정한다.
         Product product = findProductForUpdate(order.getProductId());
         if (!product.canDecreaseStock(order.getQuantity())) {
             return rejectBeforePaying(order, command, ErrorCode.STOCK_NOT_AVAILABLE);
@@ -117,6 +125,17 @@ public class PessimisticLockPaymentStateService implements PaymentStateService {
         paymentRepository.save(Payment.rejected(
                 order.getId(), command.idempotencyKey(), command.paymentKey(), order.getTotalPrice(), reason));
         return new StartPayingResult.Rejected(reason);
+    }
+
+    /**
+     * 락 없이 읽은 값으로 "확실히 차감할 수 없음"만 판정한다. 없는 상품은 여기서 판정하지 않고
+     * 락 조회({@link #findProductForUpdate})의 PRODUCT_NOT_FOUND로 넘긴다.
+     * 스냅샷이 낡아 실제로는 재고가 복구됐는데 거절하는 경우는 감수한다. (문서 5-2)
+     */
+    private boolean isSurelyOutOfStock(Order order) {
+        return productRepository.findStockSnapshot(order.getProductId())
+                .map(snapshot -> !snapshot.canDecreaseStock(order.getQuantity()))
+                .orElse(false);
     }
 
     private Payment findPayment(Long orderId) {

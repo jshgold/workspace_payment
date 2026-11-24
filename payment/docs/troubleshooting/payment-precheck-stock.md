@@ -1,6 +1,6 @@
 # 결제 승인: 락 전 재고 조회
 
-> 작성: 2026-11-24. 출발점은 `payment-x-a-b-summary.md` 5-2, 6절 "품절 폭주". 상태: **방식 정리 완료, 구현·측정 전.**
+> 작성: 2026-11-24. 출발점은 `payment-x-a-b-summary.md` 5-2, 6절 "품절 폭주". 상태: **구현·테스트 완료 (2026-11-24), 측정 전.**
 > 결정 기록: `.harness/intent.md` 8절 "품절 폭주 대응"
 
 ## 1. 한 줄 요약
@@ -101,4 +101,23 @@ MySQL 기본 격리 수준(REPEATABLE READ)에서 락 없는 SELECT는 그 트�
 
 ## 8. 결과
 
-(구현·측정 후 작성)
+### 8-1. 구현 (2026-11-24, 커밋 전)
+
+| 파일 | 내용 |
+|---|---|
+| `product/domain/ProductStockSnapshot.java` (새) | 재고 판정 값만 담은 record. 판정 규칙 `canDecreaseStock`을 여기 한 곳에 둔다 |
+| `product/domain/Product.java` | `canDecreaseStock`이 위 record의 규칙을 부른다 (규칙 중복 없음) |
+| `product/domain/ProductRepository.java` | `findStockSnapshot`: JPQL 생성자 프로젝션, 락 없음 |
+| `payment/service/PessimisticLockPaymentStateService.java` | 금액 검증 뒤, 상품 행 락 전에 `isSurelyOutOfStock`. 없는 상품은 여기서 판정하지 않고 락 조회의 `PRODUCT_NOT_FOUND`로 넘긴다 |
+
+**재현 테스트** `PessimisticLockStockPrecheckTest`
+| 테스트 | 변경 전 | 변경 후 |
+|---|---|---|
+| 재고 0 상품의 행 락을 다른 트랜잭션이 쥐고 있을 때 결제 시작 | **실패**: 2초 안에 끝나지 않음 (상품 행 락 대기) | 통과: 16ms에 `STOCK_NOT_AVAILABLE`, 주문·Payment `FAILED` 기록 |
+| 락 전 조회 통과 후 다른 트랜잭션이 마지막 재고를 가져감 | 통과 | 통과: 락 대기 후 최신 재고(0)로 거절, 재고 0 유지 (5-1 안전장치) |
+
+회귀: `com.payment.payment.*`, `com.payment.product.*` 테스트 229개 통과 (`stockContentionApprovesOnlyWinner` 포함)
+
+### 8-2. 측정
+
+(7절 조건으로 측정 후 작성)

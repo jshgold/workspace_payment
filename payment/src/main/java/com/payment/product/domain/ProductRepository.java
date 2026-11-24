@@ -24,6 +24,21 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     Optional<Product> findByIdForUpdate(@Param("id") Long id);
 
     /**
+     * 재고 판정에 필요한 값만 락 없이 읽는다. (결제 시작의 락 전 재고 조회)
+     * <ul>
+     *   <li>엔티티를 만들지 않으므로, 같은 트랜잭션의 뒤이은 {@link #findByIdForUpdate}가 최신 행을 읽는다.</li>
+     *   <li>REPEATABLE READ에서는 트랜잭션 첫 일반 읽기 시점의 스냅샷을 본다. 낡은 값일 수 있으므로
+     *       "확실히 안 됨"을 거르는 데만 쓰고, 통과하면 락을 잡은 뒤 다시 판정한다.</li>
+     * </ul>
+     */
+    @Query("""
+            select new com.payment.product.domain.ProductStockSnapshot(p.stock, p.status, p.deletedAt)
+              from Product p
+             where p.id = :id
+            """)
+    Optional<ProductStockSnapshot> findStockSnapshot(@Param("id") Long id);
+
+    /**
      * 조건부 Atomic Update로 재고를 차감한다. (Product.decreaseStock 규칙을 SQL로 옮긴 것)
      * <ul>
      *   <li>WHERE: 삭제되지 않았고, 판매중(ON_SALE)이며, 재고가 충분할 때만 대상이 된다.</li>
