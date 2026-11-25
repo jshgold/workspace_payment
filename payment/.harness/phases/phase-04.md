@@ -103,7 +103,7 @@
     - `PAYMENT_UNKNOWN`과 오래된 `PAYING` 주문이 PG가 승인한 건이면 `PAID`로, 승인되지 않은 건이면 `FAILED`로 종료된다.
     - 대사와 일반 승인 요청(또는 늦게 도착한 응답 반영)이 동시에 들어와도 한 번만 반영된다.
     - 만료와 결제 시작이 동시에 일어나도 한쪽만 반영된다.
-  - **진행 상황 (2026-11-25):** 설계 논의 완료, 코드 변경 없음. 결정은 `intent.md` 8절, 논의 경위는 `docs/payment-reconciliation-discussion.md`. 인덱스 `(status, updated_at)`는 측정으로 결정(`docs/evidence/index-explain-reconciliation.md`, 측정 코드 `OrderReconciliationIndexExplainTest`). **다음 할 일:** 재현 테스트 작성 → 실패 확인 후 멈추고 보고 → 구현 → 회귀 확인 → 가짜 PG 지연 가정 회차 처리량 측정. (구현 계획은 논의 기록 맨 끝 대화 참고)
+  - **진행 상황 (2026-11-25):** 설계 논의 완료, 코드 변경 없음. 결정은 `intent.md` 8절, 논의 경위는 `docs/payment-reconciliation-discussion.md`. 인덱스 `(status, updated_at)`는 측정으로 결정(`docs/evidence/index-explain-reconciliation.md`, 측정 코드 `OrderReconciliationIndexExplainTest`). ~~재현 테스트 작성 → 실패 확인~~ — 완료 (16개 모두 실패, `docs/evidence/before-reconciliation.md`, 계획은 논의 기록 R절). **다음 할 일:** 구현 → 회귀 확인 → 가짜 PG 지연 가정 회차 처리량 측정.
   - **학습 포인트:** phase-03 마무리 질문("PG 승인은 됐는데 서버가 죽었다")의 답. 대사 작업은 어떤 락/상태 전이로 중복 반영을 막나?
 
 - [ ] **4-5. PG 호출 멱등성**

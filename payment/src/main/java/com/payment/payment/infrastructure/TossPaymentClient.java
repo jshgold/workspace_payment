@@ -3,6 +3,7 @@ package com.payment.payment.infrastructure;
 import java.net.ConnectException;
 import java.net.UnknownHostException;
 import java.net.http.HttpConnectTimeoutException;
+import java.util.Optional;
 import java.util.Set;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -20,6 +21,7 @@ import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.domain.PgCancelResult;
+import com.payment.payment.domain.PgPaymentLookup;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -144,6 +146,12 @@ public class TossPaymentClient implements PaymentClient {
             log.warn("토스 취소 응답 처리 중 오류. 취소 여부를 알 수 없다. paymentKey={}", paymentKey, e);
             throw new PaymentTimeoutException();
         }
+    }
+
+    /** {@code GET /v1/payments/{paymentKey}}. 4-4 구현 단계에서 연동한다. (재현 테스트는 가짜 PG로 돈다) */
+    @Override
+    public Optional<PgPaymentLookup> lookup(String paymentKey) {
+        throw new UnsupportedOperationException("토스 결제 조회 연동은 phase-04 4-4 구현 단계에서 작성한다.");
     }
 
     private PgCancelResult toCancelResult(String paymentKey, RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response)
