@@ -90,16 +90,20 @@
   - 대사와 만료의 기준 시간 N을 정하고 결정 기록에 남긴다.
   - PG 결제 조회 API 연동 (`paymentKey` 또는 주문 식별자 기준)
   - 결제 대사 (스케줄러 또는 수동 호출 API). 대상: `PAYMENT_UNKNOWN` 전체 + N분 넘게 `PAYING`에 머문 주문(서버 중단 추정)
-    - **PG의 "승인됨"만 보고 `PAID`로 확정하지 않는다. 승인 금액도 서버 금액과 비교한다.** `failure_code=PAYMENT_CANCEL_FAILED`인 `UNKNOWN`은 금액 불일치나 반영 실패로 보상 취소를 하려다 실패한 건이다. PG에서는 승인 상태로 보이지만 `PAID`로 확정하지 말고 다시 취소해야 한다. (4-2+ 결정: 보상 취소 실패)
+    - **PG의 "승인됨"만 보고 `PAID`로 확정하지 않는다. 승인 금액도 서버 금액과 비교한다.** `failure_code=PAYMENT_CANCEL_FAILED`인 `UNKNOWN`은 금액 불일치나 반영 실패로 보상 취소를 하려다 실패한 건이다. 둘을 나눠 처리한다. (2026-11-25 변경: 처음에는 둘 다 "다시 취소"였다)
+      - PG 조회 `CANCELED`: 앞선 보상 취소가 실제로는 성공했다. `FAILED` + 재고 복구
+      - PG 조회 `DONE` + 금액 일치 (반영 실패): 고객이 동의했고 PG도 승인한 정상 결제다. 실패한 것은 우리 DB 기록뿐이므로 `PAID`로 확정한다
+      - PG 조회 `DONE` + 금액 불일치: 받기로 한 금액이 아니므로 다시 취소하고, 성공하면 `FAILED` + 재고 복구
     - PG가 승인한 건: `PAID`로 확정한다. 재고는 `startPaying`에서 이미 차감했으므로 건드리지 않는다. (선차감)
     - PG가 승인하지 않은 건: `FAILED`로 종료하고 재고를 복구한다.
   - 취소 대사. 대상: `CANCEL_UNKNOWN` 전체 + N분 넘게 `CANCELING`에 머문 주문 → `CANCELED`(재고 복구) 또는 `PAID`
-  - 주문 만료: N분 넘게 `PENDING`인 주문을 `EXPIRED`로 바꾼다. 결제 시작과 겹쳐도 한쪽만 반영되도록 `WHERE status = 'PENDING'` 조건부 전이로 한다.
+  - 주문 만료: N분 넘게 `PENDING`인 주문을 `EXPIRED`로 바꾼다. 결제 시작과 겹쳐도 한쪽만 반영되도록, 대상 id를 락 없이 고른 뒤 주문마다 락(`FOR UPDATE`)을 잡고 `PENDING`인지 다시 확인해 도메인 메서드로 전이한다. (2026-11-25 변경: 처음에는 `WHERE status = 'PENDING'` 조건부 UPDATE였다. 상태 규칙을 도메인 메서드 한 곳에 두기 위해 비관적 락으로 통일)
   - 대사·만료 대상 조회 쿼리의 실행 계획을 확인하고 필요한 인덱스를 정한다.
   - **완료 조건:**
     - `PAYMENT_UNKNOWN`과 오래된 `PAYING` 주문이 PG가 승인한 건이면 `PAID`로, 승인되지 않은 건이면 `FAILED`로 종료된다.
     - 대사와 일반 승인 요청(또는 늦게 도착한 응답 반영)이 동시에 들어와도 한 번만 반영된다.
     - 만료와 결제 시작이 동시에 일어나도 한쪽만 반영된다.
+  - **진행 상황 (2026-11-25):** 설계 논의 완료, 코드 변경 없음. 결정은 `intent.md` 8절, 논의 경위는 `docs/payment-reconciliation-discussion.md`. 인덱스 `(status, updated_at)`는 측정으로 결정(`docs/evidence/index-explain-reconciliation.md`, 측정 코드 `OrderReconciliationIndexExplainTest`). **다음 할 일:** 재현 테스트 작성 → 실패 확인 후 멈추고 보고 → 구현 → 회귀 확인 → 가짜 PG 지연 가정 회차 처리량 측정. (구현 계획은 논의 기록 맨 끝 대화 참고)
   - **학습 포인트:** phase-03 마무리 질문("PG 승인은 됐는데 서버가 죽었다")의 답. 대사 작업은 어떤 락/상태 전이로 중복 반영을 막나?
 
 - [ ] **4-5. PG 호출 멱등성**
