@@ -163,6 +163,59 @@ public class Payment {
         this.status = PaymentStatus.CANCELED;
     }
 
+    /** 승인 대사의 대상인 시도인지. (요청 중에 서버가 죽었거나, 결과 모름) */
+    public boolean isAwaitingReconciliation() {
+        return this.status == PaymentStatus.REQUESTED || this.status == PaymentStatus.UNKNOWN;
+    }
+
+    /** 보상 취소가 실패해 결과 모름으로 남은 시도인지 */
+    public boolean isCompensationFailed() {
+        return this.status == PaymentStatus.UNKNOWN
+                && ErrorCode.PAYMENT_CANCEL_FAILED.name().equals(this.failureCode);
+    }
+
+    /**
+     * 대사: PG 조회로 승인이 확인됐다. {@code REQUESTED | UNKNOWN → APPROVED} (4-4)
+     * 보상 취소 실패 사유는 결과가 확정됐으므로 지운다. (경위는 대사 로그에 남는다)
+     */
+    public void confirmApprovedByReconciliation(long approvedAmount) {
+        assertAwaitingReconciliation();
+        this.status = PaymentStatus.APPROVED;
+        this.approvedAmount = approvedAmount;
+        this.failureCode = null;
+    }
+
+    /**
+     * 대사: 돈이 나가지 않았거나 돌려줬음이 확인됐다. {@code REQUESTED | UNKNOWN → FAILED} (4-4)
+     *
+     * @param approvedAmount PG가 승인했다가 취소된 금액을 알면 그 금액, 아니면 기존 값을 유지하도록 null
+     */
+    public void confirmFailedByReconciliation(ErrorCode failureCode, Long approvedAmount) {
+        assertAwaitingReconciliation();
+        if (failureCode == null) {
+            throw new IllegalArgumentException("실패 코드는 필수입니다.");
+        }
+        this.status = PaymentStatus.FAILED;
+        this.failureCode = failureCode.name();
+        if (approvedAmount != null) {
+            this.approvedAmount = approvedAmount;
+        }
+    }
+
+    /** 대사: 금액이 다른 승인을 다시 취소하려다 실패했다. {@code REQUESTED | UNKNOWN → UNKNOWN} + {@code PAYMENT_CANCEL_FAILED} */
+    public void keepUnknownAfterCancelFailure(long approvedAmount) {
+        assertAwaitingReconciliation();
+        this.status = PaymentStatus.UNKNOWN;
+        this.failureCode = ErrorCode.PAYMENT_CANCEL_FAILED.name();
+        this.approvedAmount = approvedAmount;
+    }
+
+    private void assertAwaitingReconciliation() {
+        if (!isAwaitingReconciliation()) {
+            throw new IllegalStateException("대사로 확정할 수 없는 결제 상태입니다. 현재 상태: " + this.status);
+        }
+    }
+
     public boolean belongsTo(Long orderId) {
         return this.orderId.equals(orderId);
     }

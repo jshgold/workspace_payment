@@ -2,7 +2,11 @@ package com.payment.order.domain;
 
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
+import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -20,6 +24,24 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
     @Query("select o from Order o where o.id = :id")
     Optional<Order> findByIdForUpdate(@Param("id") Long id);
+
+    /**
+     * 대사·만료 대상 id를 락 없이 고른다. (4-4) 인덱스 {@code (status, updated_at)}를 쓴다. (V11)
+     * <p>
+     * {@code id > afterId}로 앞 묶음 다음부터 읽는다. 처리하지 못하고 남는 건(조회 실패 등)이 있어도
+     * 같은 회차 안에서 같은 건을 다시 고르지 않게 하기 위해서다.
+     */
+    @Query("""
+            select o.id from Order o
+             where o.status in :statuses
+               and o.updatedAt < :before
+               and o.id > :afterId
+             order by o.id
+            """)
+    List<Long> findIdsForBatch(@Param("statuses") Collection<OrderStatus> statuses,
+                               @Param("before") LocalDateTime before,
+                               @Param("afterId") long afterId,
+                               Limit limit);
 
     /**
      * [원자적 쿼리 전략] 주문 상태를 {@code expected}일 때만 {@code next}로 바꾼다. (상태 전이가 곧 관문)

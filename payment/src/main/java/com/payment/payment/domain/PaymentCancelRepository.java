@@ -1,5 +1,6 @@
 package com.payment.payment.domain;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -26,4 +27,7 @@ public interface PaymentCancelRepository extends JpaRepository<PaymentCancel, Lo
     Optional<PaymentCancel> findByIdempotencyKeyForShare(@Param("idempotencyKey") String idempotencyKey);
 
     List<PaymentCancel> findAllByOrderIdOrderByIdAsc(Long orderId);
+
+    /** 대사 묶음에서 아직 확정되지 않은 취소 시도를 한 번에 읽는다. 주문 상태 선점 때문에 주문마다 많아야 하나다. */
+    List<PaymentCancel> findAllByOrderIdInAndStatusIn(Collection<Long> orderIds, Collection<PaymentCancelStatus> statuses);
 }

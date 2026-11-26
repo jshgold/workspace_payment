@@ -12,7 +12,7 @@ import org.testcontainers.mysql.MySQLContainer;
  * {@link ServiceConnection}이 컨테이너의 접속 정보를 DataSource에 자동으로 연결하므로
  * application-local.yaml의 datasource 설정은 테스트에서 사용되지 않는다.
  */
-@SpringBootTest
+@SpringBootTest(properties = "app.scheduling.enabled=false") // 대사·만료가 백그라운드에서 테스트 데이터를 바꾸지 않게
 @ActiveProfiles("local")
 public abstract class IntegrationTestSupport {
 

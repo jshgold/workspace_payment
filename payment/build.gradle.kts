@@ -68,6 +68,23 @@ tasks.withType<Test> {
     useJUnitPlatform()
 }
 
+// 성능·실행 계획 측정(@Tag("measurement"))은 일반 테스트에서 빼고, 측정할 때만 measurementTest로 돌린다.
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("measurement")
+    }
+}
+
+val measurementTest by tasks.registering(Test::class) {
+    description = "@Tag(\"measurement\") 측정 테스트만 실행한다."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("measurement")
+    }
+}
+
 // build.gradle.kts
 tasks.bootRun {
     val envFile = file(".env")

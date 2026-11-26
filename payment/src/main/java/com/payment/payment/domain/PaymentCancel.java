@@ -125,6 +125,36 @@ public class PaymentCancel {
         this.status = PaymentCancelStatus.UNKNOWN;
     }
 
+    /** 대사로 확정할 시도인지. (요청 중에 서버가 죽었거나, 결과 모름) */
+    public boolean isAwaitingReconciliation() {
+        return this.status == PaymentCancelStatus.REQUESTED || this.status == PaymentCancelStatus.UNKNOWN;
+    }
+
+    /** 대사: PG 조회로 취소가 확인됐다. {@code REQUESTED | UNKNOWN → COMPLETED} (4-4) */
+    public void confirmCompletedByReconciliation() {
+        assertAwaitingReconciliation();
+        this.status = PaymentCancelStatus.COMPLETED;
+    }
+
+    /** 대사: PG 조회로 취소되지 않았음이 확인됐다. {@code REQUESTED | UNKNOWN → FAILED} (4-4) */
+    public void confirmNotAppliedByReconciliation() {
+        assertAwaitingReconciliation();
+        this.status = PaymentCancelStatus.FAILED;
+        this.failureCode = ErrorCode.PAYMENT_CANCEL_NOT_APPLIED.name();
+    }
+
+    /** 대사: PG 조회가 NOT_FOUND_PAYMENT라 사람이 확인한다. 결과를 모르는 것은 그대로이므로 {@code REQUESTED → UNKNOWN}, UNKNOWN이면 그대로. (4-4) */
+    public void keepUnknownForReview() {
+        assertAwaitingReconciliation();
+        this.status = PaymentCancelStatus.UNKNOWN;
+    }
+
+    private void assertAwaitingReconciliation() {
+        if (!isAwaitingReconciliation()) {
+            throw new IllegalStateException("대사로 확정할 수 없는 취소 시도 상태입니다. 현재 상태: " + this.status);
+        }
+    }
+
     /** 같은 키의 재요청이 처음 요청과 같은 내용(주문, 사유)인지 본다. */
     public boolean isSameRequest(Long orderId, String reason) {
         return this.orderId.equals(orderId) && this.reason.equals(reason);

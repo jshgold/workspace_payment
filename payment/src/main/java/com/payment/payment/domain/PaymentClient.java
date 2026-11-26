@@ -1,5 +1,7 @@
 package com.payment.payment.domain;
 
+import java.util.Optional;
+
 /**
  * 외부 PG와의 통신 추상화. 실제 PG(토스페이먼츠, 포트원 등)가 정해지면 구현체만 추가한다.
  * <p>
@@ -25,4 +27,13 @@ public interface PaymentClient {
      * @throws PaymentTimeoutException        응답을 받지 못함. PG에서 취소됐는지 <b>알 수 없다</b>.
      */
     PgCancelResult cancel(String paymentKey, String reason);
+
+    /**
+     * 결제를 조회한다. 대사 전용이며 PG에 쓰기를 하지 않는다. (phase-04 4-4)
+     *
+     * @return PG가 그 결제를 모르면({@code NOT_FOUND_PAYMENT}) 빈 값
+     * @throws PaymentTimeoutException 조회 응답을 받지 못함(타임아웃, 5xx). 상태를 바꾸지 않고 다음 회차에 다시 조회한다.
+     * @throws PaymentGatewayException 요청이 PG에 닿지 않음(연결 실패, 키 오류). 마찬가지로 다음 회차에 다시 조회한다.
+     */
+    Optional<PgPaymentLookup> lookup(String paymentKey);
 }

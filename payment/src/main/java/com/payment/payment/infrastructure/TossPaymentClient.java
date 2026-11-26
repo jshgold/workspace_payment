@@ -3,6 +3,7 @@ package com.payment.payment.infrastructure;
 import java.net.ConnectException;
 import java.net.UnknownHostException;
 import java.net.http.HttpConnectTimeoutException;
+import java.util.Optional;
 import java.util.Set;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -16,10 +17,13 @@ import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
+import com.payment.payment.domain.PaymentLookupRejectedException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
 import com.payment.payment.domain.PgCancelResult;
+import com.payment.payment.domain.PgPaymentLookup;
+import com.payment.payment.domain.PgPaymentStatus;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,6 +55,9 @@ public class TossPaymentClient implements PaymentClient {
     private static final String STATUS_DONE = "DONE";
     private static final String CANCEL_PATH = "/v1/payments/{paymentKey}/cancel";
     private static final String STATUS_CANCELED = "CANCELED";
+    private static final String LOOKUP_PATH = "/v1/payments/{paymentKey}";
+    /** 결제 조회 404. PG가 그 결제를 모른다. (공식 에러 코드 문서 "결제 조회" 표) */
+    private static final String NOT_FOUND_PAYMENT = "NOT_FOUND_PAYMENT";
 
     /** 전액 환불이 이미 끝났다는 뜻의 취소 응답 코드. 실패가 아니라 성공으로 본다. (intent 8절) */
     private static final Set<String> ALREADY_CANCELED_CODES = Set.of("ALREADY_CANCELED_PAYMENT", "ALREADY_REFUND_PAYMENT");
@@ -69,6 +76,9 @@ public class TossPaymentClient implements PaymentClient {
 
     /** 4xx지만 이미 승인됐거나 승인 중일 수 있는 코드. 거절로 확정하면 안 된다. */
     private static final Set<String> UNKNOWN_RESULT_CODES = Set.of("ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING");
+
+    /** 4xx지만 다시 조회하면 될 수 있는 조회 응답 코드. 일시 오류, 반복 요청 차단. (429는 코드와 상관없이 같다) */
+    private static final Set<String> LOOKUP_TRANSIENT_CODES = Set.of("PROVIDER_ERROR", "FORBIDDEN_CONSECUTIVE_REQUEST");
 
     /** 연결 실패를 {@link PaymentGatewayException}으로 알릴 때 쓰는 우리 쪽 코드. (PG가 준 코드가 아니다) */
     static final String CONNECTION_FAILED = "CONNECTION_FAILED";
@@ -143,6 +153,84 @@ public class TossPaymentClient implements PaymentClient {
         } catch (RestClientException e) {
             log.warn("토스 취소 응답 처리 중 오류. 취소 여부를 알 수 없다. paymentKey={}", paymentKey, e);
             throw new PaymentTimeoutException();
+        }
+    }
+
+    /**
+     * {@code GET /v1/payments/{paymentKey}}로 결제를 조회한다. 대사 전용이며 PG 상태를 바꾸지 않는다.
+     * <pre>
+     * 2xx + 알려진 status + totalAmount   → 조회 결과
+     * 404 NOT_FOUND_PAYMENT               → 빈 값 (PG가 그 결제를 모름. 판단은 대사가 한다)
+     * 401, 키 오류, 연결 실패               → PaymentGatewayException (조회 실패, 다음 회차)
+     * 5xx, 429, 일시 오류·반복 요청 차단,
+     * 타임아웃, 이상한 본문                  → PaymentTimeoutException (조회 실패, 다음 회차)
+     * 그 밖의 4xx (일반 404 NOT_FOUND, 400 등) → PaymentLookupRejectedException (조회 거절. 사람이 본다)
+     * </pre>
+     * {@code NOT_FOUND}(404, "존재하지 않는 정보")는 결제가 없다는 뜻으로 단정할 수 없어 "없음"으로 보지 않는다.
+     * "없음"으로 잘못 분류하면 승인된 결제를 FAILED로 확정하게 된다. 그렇다고 일시 실패도 아니다. 같은 요청엔 같은 응답이
+     * 오므로, 일시 실패로 세면 이런 건 몇 개가 매 회차 연속 실패를 채워 대사 전체를 멈춘다. (2026-11-26 변경)
+     */
+    @Override
+    public Optional<PgPaymentLookup> lookup(String paymentKey) {
+        try {
+            return tossRestClient.get()
+                    .uri(LOOKUP_PATH, paymentKey)
+                    .exchange((httpRequest, response) -> toLookup(paymentKey, response));
+        } catch (ResourceAccessException e) {
+            if (isNotDelivered(e)) {
+                log.warn("토스 결제 조회 연결 실패. paymentKey={}", paymentKey, e);
+                throw new PaymentGatewayException(CONNECTION_FAILED);
+            }
+            log.warn("토스 결제 조회 중 네트워크 오류. paymentKey={}", paymentKey, e);
+            throw new PaymentTimeoutException();
+        } catch (RestClientException e) {
+            log.warn("토스 결제 조회 응답 처리 중 오류. paymentKey={}", paymentKey, e);
+            throw new PaymentTimeoutException();
+        }
+    }
+
+    private Optional<PgPaymentLookup> toLookup(String paymentKey,
+                                               RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response)
+            throws java.io.IOException {
+        int status = response.getStatusCode().value();
+
+        if (response.getStatusCode().is2xxSuccessful()) {
+            TossLookupPayment body = readBody(response, TossLookupPayment.class);
+            PgPaymentStatus pgStatus = body == null ? null : parseStatus(body.status());
+            if (pgStatus == null || body.totalAmount() == null) {
+                log.error("토스 결제 조회 응답이 비정상이다. paymentKey={}, status={}, body.status={}",
+                        paymentKey, status, body == null ? null : body.status());
+                throw new PaymentTimeoutException();
+            }
+            return Optional.of(new PgPaymentLookup(pgStatus, body.totalAmount()));
+        }
+
+        TossError error = readBody(response, TossError.class);
+        String code = error == null ? null : error.code();
+        if (NOT_FOUND_PAYMENT.equals(code)) {
+            log.warn("토스가 존재하지 않는 결제라고 답했다. paymentKey={}", paymentKey);
+            return Optional.empty();
+        }
+
+        log.warn("토스 결제 조회 실패 응답. paymentKey={}, status={}, code={}", paymentKey, status, code);
+        if (status == 401 || (code != null && CONFIG_ERROR_CODES.contains(code))) {
+            throw new PaymentGatewayException(code == null ? "HTTP " + status : code);
+        }
+        if (response.getStatusCode().is4xxClientError() && status != 429
+                && (code == null || !LOOKUP_TRANSIENT_CODES.contains(code))) {
+            throw new PaymentLookupRejectedException(status, code);
+        }
+        throw new PaymentTimeoutException();
+    }
+
+    private static PgPaymentStatus parseStatus(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return PgPaymentStatus.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
@@ -247,6 +335,10 @@ public class TossPaymentClient implements PaymentClient {
 
     /** 승인 성공 응답(Payment 객체) 중 필요한 필드만 읽는다. 새 필드가 추가되어도 영향받지 않는다. */
     private record TossPayment(String paymentKey, String orderId, String status, long totalAmount) {
+    }
+
+    /** 결제 조회 응답(Payment 객체) 중 대사에 필요한 필드만 읽는다. */
+    private record TossLookupPayment(String paymentKey, String status, Long totalAmount) {
     }
 
     private record TossError(String code, String message) {

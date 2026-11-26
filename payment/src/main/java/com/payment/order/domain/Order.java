@@ -173,6 +173,82 @@ public class Order {
         this.status = OrderStatus.PAID;
     }
 
+    /** 결제를 시작하지 않은 채 버려진 주문을 만료한다. 재고를 쥐고 있지 않으므로 재고는 건드리지 않는다. (4-4) */
+    public void expire() {
+        assertStatus(OrderStatus.PENDING, "만료할 수 없는 주문 상태입니다.");
+        this.status = OrderStatus.EXPIRED;
+    }
+
+    /** 승인 대사의 대상인지. 결과 모름이거나, 응답이 기록되지 못한 채 남은 진행 중 상태 */
+    public boolean isAwaitingPaymentReconciliation() {
+        return this.status == OrderStatus.PAYING || this.status == OrderStatus.PAYMENT_UNKNOWN;
+    }
+
+    /** 취소 대사의 대상인지 */
+    public boolean isAwaitingCancelReconciliation() {
+        return this.status == OrderStatus.CANCELING || this.status == OrderStatus.CANCEL_UNKNOWN;
+    }
+
+    /** 대사: PG 조회로 승인이 확인됐다. {@code PAYING | PAYMENT_UNKNOWN → PAID} (4-4) */
+    public void confirmPaidByReconciliation() {
+        assertAwaitingPaymentReconciliation();
+        this.status = OrderStatus.PAID;
+    }
+
+    /** 대사: PG 조회로 돈이 나가지 않았음(또는 돌려줬음)이 확인됐다. {@code PAYING | PAYMENT_UNKNOWN → FAILED}. 재고 복구는 호출하는 쪽이 같은 트랜잭션에서 한다. */
+    public void confirmFailedByReconciliation() {
+        assertAwaitingPaymentReconciliation();
+        this.status = OrderStatus.FAILED;
+    }
+
+    /** 대사: 보상 재취소마저 실패해 돈이 묶였는지 모른다. {@code PAYING → PAYMENT_UNKNOWN}. 이미 결과 모름이면 그대로 둔다. */
+    public void keepPaymentUnknownByReconciliation() {
+        assertAwaitingPaymentReconciliation();
+        this.status = OrderStatus.PAYMENT_UNKNOWN;
+    }
+
+    /** 대사: PG 조회로 취소가 확인됐다. {@code CANCELING | CANCEL_UNKNOWN → CANCELED}. 재고 복구는 호출하는 쪽이 한다. */
+    public void confirmCanceledByReconciliation() {
+        assertAwaitingCancelReconciliation();
+        this.status = OrderStatus.CANCELED;
+    }
+
+    /**
+     * 대사: PG 조회로 취소되지 않았음이 확인됐다. {@code CANCELING | CANCEL_UNKNOWN → PAID}.
+     * 전이표의 예외 간선이다. 취소 시도가 무산된 것이고, 시도는 기록으로 남는다.
+     */
+    public void confirmCancelNotAppliedByReconciliation() {
+        assertAwaitingCancelReconciliation();
+        this.status = OrderStatus.PAID;
+    }
+
+    /**
+     * 대사: PG 조회가 NOT_FOUND_PAYMENT다. 결과가 아니라 장애이므로 대사 대상에서 빼고 사람이 확인한다.
+     * {@code CANCELING | CANCEL_UNKNOWN → CANCEL_REVIEW}. 재고·결제는 그대로. (4-4)
+     */
+    public void markCancelReviewByReconciliation() {
+        assertAwaitingCancelReconciliation();
+        this.status = OrderStatus.CANCEL_REVIEW;
+    }
+
+    /** 사람이 원인을 고친 뒤 다시 대사하게 한다. {@code CANCEL_REVIEW → CANCEL_UNKNOWN}. 확정은 대사의 PG 조회로만 한다. (4-4) */
+    public void reopenCancelReview() {
+        assertStatus(OrderStatus.CANCEL_REVIEW, "취소 확인 필요 상태가 아닌 주문은 되돌릴 수 없습니다.");
+        this.status = OrderStatus.CANCEL_UNKNOWN;
+    }
+
+    private void assertAwaitingPaymentReconciliation() {
+        if (!isAwaitingPaymentReconciliation()) {
+            throw new IllegalStateException("승인 대사로 확정할 수 없는 주문 상태입니다. 현재 상태: " + this.status);
+        }
+    }
+
+    private void assertAwaitingCancelReconciliation() {
+        if (!isAwaitingCancelReconciliation()) {
+            throw new IllegalStateException("취소 대사로 확정할 수 없는 주문 상태입니다. 현재 상태: " + this.status);
+        }
+    }
+
     private void assertStatus(OrderStatus expected, String message) {
         if (this.status != expected) {
             throw new IllegalStateException(message + " 현재 상태: " + this.status);

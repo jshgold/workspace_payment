@@ -31,8 +31,11 @@ import org.springframework.stereotype.Service;
  *   <li>명확한 실패 (거절, 요청이 PG에 닿지 않은 연동 오류): {@code fail} → FAILED / FAILED, 재고 복구</li>
  *   <li>결과 모름 (타임아웃, 5xx, 알 수 없는 예외): {@code markUnknown} → PAYMENT_UNKNOWN / UNKNOWN, 재고 유지 (대사의 몫)</li>
  * </ul>
- * 승인 후 반영할 수 없으면(금액 불일치, 반영 실패) PG 승인을 취소(보상)한다. 취소가 성공해야 FAILED로 확정하고,
+ * PG 승인 금액이 서버 금액과 다르면 PG 승인을 취소(보상)한다. 취소가 성공해야 FAILED로 확정하고,
  * 취소도 실패하면 돈이 묶였는지 모르므로 결과 모름으로 둔다.
+ * <p>
+ * 서버 금액 그대로 승인됐는데 반영(DB)만 실패하면 보상 취소하지 않는다. 고객이 동의했고 돈도 나간 정상 결제이므로
+ * 결과 모름으로 남기고 대사가 PAID로 확정한다. (intent 8절 "승인 후 DB 반영 실패", 2026-11-26)
  * <p>
  * 요청 1건의 트랜잭션은 2번이다. (트러블슈팅 개선 B, 재설계 전 4번)
  */
@@ -112,9 +115,10 @@ public class PaymentFacade {
         try {
             return PaymentSegmentTimer.time("complete", () -> paymentStateService.complete(orderId, approveResult));
         } catch (RuntimeException e) {
-            log.warn("PG 승인 후 결제 반영 실패. 승인 취소를 시도한다. orderId={}, pgTransactionId={}",
+            // 돈은 서버 금액 그대로 나갔고 실패한 것은 우리 기록뿐이다. 되돌리지 않고 대사가 PAID로 확정한다.
+            log.error("PG 승인 후 결제 반영 실패. 보상 취소하지 않고 결과 모름으로 남겨 대사에 맡긴다. orderId={}, pgTransactionId={}",
                     orderId, approveResult.pgTransactionId(), e);
-            compensate(orderId, approveResult, ErrorCode.INTERNAL_SERVER_ERROR, "결제 반영 실패");
+            recordUnknown(orderId, null, approveResult.approvedAmount(), e);
             throw e;
         }
     }
