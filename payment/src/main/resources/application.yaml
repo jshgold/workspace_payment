@@ -16,3 +16,24 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  task:
+    scheduling:
+      pool:
+        size: 2   # 대사와 만료가 서로 기다리지 않게
+
+# 대사·만료 (phase-04 4-4, intent 8절). 모두 운영 근거 없는 초기값이다. 회차 로그를 보고 조정한다.
+app:
+  scheduling:
+    enabled: true   # 통합 테스트는 IntegrationTestSupport에서 끈다
+  reconciliation:
+    threshold: 5m           # 상태가 된 지(updated_at) 이만큼 지난 PAYING·PAYMENT_UNKNOWN·CANCELING·CANCEL_UNKNOWN
+    interval: 1m
+    batch-size: 500
+    max-round-duration: 50s
+    max-consecutive-pg-failures: 3
+    pg-calls-per-second: 5  # 토스 한도 미확인
+  expiration:
+    threshold: 30m          # 주문 생성 후 (토스 결제 유효 30분을 위젯 표시부터로 봄)
+    interval: 5m
+    batch-size: 500
+    max-round-duration: 50s

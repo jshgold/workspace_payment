@@ -6,8 +6,10 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -90,21 +92,24 @@ class ReconciliationConcurrencyTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("X1 — 상품 1 × 재고 100, 31분 지난 PENDING 주문 20개(수량 2)에 만료 1번과 승인 요청 20건이 동시에 들어옴 → 각 주문은 EXPIRED(결제 기록·PG 승인 없음) 또는 PAID 중 하나만 되고, 재고 = 100 - 2 × PAID 건수, PG 승인 횟수 = PAID 건수")
+    @DisplayName("X1 — 상품 1 × 재고 200, 31분 지난 PENDING 주문 40개(수량 2)에 만료 1번(id 오름차순)과 승인 요청 40건(4스레드, id 내림차순)이 동시에 들어옴 → 각 주문은 EXPIRED(결제 기록·PG 승인 없음) 또는 PAID 중 하나만 되고, 재고 = 200 - 2 × PAID 건수, PG 승인 횟수 = PAID 건수")
     void expirationAndPaymentStartAreExclusive() throws InterruptedException {
         // given
-        int initialStock = 100;
-        int orderCount = 20;
+        int initialStock = 200;
+        int orderCount = 40;
+        int approveThreads = 4;
         Product product = productRepository.save(Product.create("키보드", PRICE, initialStock));
         List<Order> orders = new ArrayList<>();
         for (int i = 0; i < orderCount; i++) {
             orders.add(saveAgedPendingOrder(product, 31));
         }
+        // 만료는 id 오름차순으로 처리한다. 승인을 내림차순으로 보내면 둘이 가운데에서 만나 양쪽 결과가 모두 생긴다.
+        Deque<Order> approveQueue = new ConcurrentLinkedDeque<>(orders.reversed());
 
-        ExecutorService executor = Executors.newFixedThreadPool(orderCount + 1);
-        CountDownLatch ready = new CountDownLatch(orderCount + 1);
+        ExecutorService executor = Executors.newFixedThreadPool(approveThreads + 1);
+        CountDownLatch ready = new CountDownLatch(approveThreads + 1);
         CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(orderCount + 1);
+        CountDownLatch done = new CountDownLatch(approveThreads + 1);
         Queue<Throwable> expireErrors = new ConcurrentLinkedQueue<>();
         Queue<Throwable> approveErrors = new ConcurrentLinkedQueue<>();
 
@@ -121,15 +126,20 @@ class ReconciliationConcurrencyTest extends IntegrationTestSupport {
                 done.countDown();
             }
         });
-        for (Order order : orders) {
+        for (int t = 0; t < approveThreads; t++) {
             executor.submit(() -> {
                 ready.countDown();
                 await(start);
                 try {
-                    approveFacade.approve(order.getId(), "key-" + order.getId(), order.getTotalPrice(),
-                            "payment-key-" + order.getId());
-                } catch (Throwable e) {
-                    approveErrors.add(e);
+                    Order order;
+                    while ((order = approveQueue.pollFirst()) != null) {
+                        try {
+                            approveFacade.approve(order.getId(), "key-" + order.getId(), order.getTotalPrice(),
+                                    "payment-key-" + order.getId());
+                        } catch (Throwable e) {
+                            approveErrors.add(e);
+                        }
+                    }
                 } finally {
                     done.countDown();
                 }

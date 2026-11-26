@@ -1,5 +1,7 @@
 package com.payment.payment.domain;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 import jakarta.persistence.LockModeType;
@@ -11,6 +13,9 @@ import org.springframework.data.repository.query.Param;
 public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
     Optional<Payment> findByOrderId(Long orderId);
+
+    /** 대사 묶음의 결제 시도를 한 번에 읽는다. (반복문 안 조회 방지) */
+    List<Payment> findAllByOrderIdIn(Collection<Long> orderIds);
 
     /** 같은 키의 재전송인지 확인한다. 락 없이 읽는 빠른 경로다. */
     Optional<Payment> findByIdempotencyKey(String idempotencyKey);

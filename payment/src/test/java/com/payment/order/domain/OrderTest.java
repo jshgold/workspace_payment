@@ -289,4 +289,80 @@ class OrderTest {
         assertThat(pending.getStatus()).isEqualTo(OrderStatus.FAILED);
         assertThatThrownBy(paying::rejectBeforePaying).isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    @DisplayName("PENDING 주문만 만료할 수 있고, 만료된 주문은 결제를 시작할 수 없다")
+    void expire() {
+        // given
+        Order pending = Order.create(1L, product(5), 1);
+        Order paying = Order.create(1L, product(5), 1);
+        paying.startPaying();
+
+        // when
+        pending.expire();
+
+        // then
+        assertThat(pending.getStatus()).isEqualTo(OrderStatus.EXPIRED);
+        assertThatThrownBy(pending::startPaying).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(paying::expire).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("승인 대사는 PAYING과 PAYMENT_UNKNOWN 모두에서 PAID 또는 FAILED로 확정할 수 있다")
+    void paymentReconciliationTransitions() {
+        // given
+        Order paying = Order.create(1L, product(5), 1);
+        paying.startPaying();
+        Order unknown = Order.create(1L, product(5), 1);
+        unknown.startPaying();
+        unknown.markPaymentUnknown();
+
+        // when
+        paying.confirmPaidByReconciliation();
+        unknown.confirmFailedByReconciliation();
+
+        // then
+        assertThat(paying.getStatus()).isEqualTo(OrderStatus.PAID);
+        assertThat(unknown.getStatus()).isEqualTo(OrderStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("승인 대사는 이미 확정된 주문(PAID, FAILED)이나 결제를 시작하지 않은 주문(PENDING)을 바꿀 수 없다")
+    void paymentReconciliationRejectsOtherStates() {
+        // given
+        Order pending = Order.create(1L, product(5), 1);
+        Order failed = Order.create(1L, product(5), 1);
+        failed.startPaying();
+        failed.markFailed();
+        Order paid = Order.create(1L, product(5), 1);
+        paid.startPaying();
+        paid.markPaid();
+
+        // when // then
+        assertThatThrownBy(pending::confirmPaidByReconciliation).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(failed::confirmPaidByReconciliation).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(paid::confirmFailedByReconciliation).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("취소 대사는 CANCELING과 CANCEL_UNKNOWN 모두에서 CANCELED 또는 PAID로 확정할 수 있고, 그 밖의 상태는 바꿀 수 없다")
+    void cancelReconciliationTransitions() {
+        // given
+        Order canceling = paidOrder();
+        canceling.startCanceling();
+        Order cancelUnknown = paidOrder();
+        cancelUnknown.startCanceling();
+        cancelUnknown.markCancelUnknown();
+        Order paid = paidOrder();
+
+        // when
+        canceling.confirmCanceledByReconciliation();
+        cancelUnknown.confirmCancelNotAppliedByReconciliation();
+
+        // then
+        assertThat(canceling.getStatus()).isEqualTo(OrderStatus.CANCELED);
+        assertThat(cancelUnknown.getStatus()).isEqualTo(OrderStatus.PAID);
+        assertThatThrownBy(paid::confirmCanceledByReconciliation).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(canceling::confirmCancelNotAppliedByReconciliation).isInstanceOf(IllegalStateException.class);
+    }
 }

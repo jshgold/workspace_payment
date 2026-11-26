@@ -39,7 +39,11 @@ public enum ErrorCode {
     PAYMENT_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_008", "결제 서비스 연동에 문제가 있어 결제를 진행할 수 없습니다. 결제는 승인되지 않았습니다."),
     PAYMENT_CANCEL_DECLINED(HttpStatus.CONFLICT, "PAYMENT_009", "결제사가 취소를 거절했습니다. 결제는 취소되지 않았습니다."),
     PAYMENT_CANCEL_UNKNOWN(HttpStatus.GATEWAY_TIMEOUT, "PAYMENT_010", "결제사 응답이 지연되어 취소 결과를 확인하고 있습니다."),
-    PAYMENT_CANCEL_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_011", "결제 서비스 연동에 문제가 있어 취소를 진행할 수 없습니다. 결제는 취소되지 않았습니다.");
+    PAYMENT_CANCEL_GATEWAY_ERROR(HttpStatus.BAD_GATEWAY, "PAYMENT_011", "결제 서비스 연동에 문제가 있어 취소를 진행할 수 없습니다. 결제는 취소되지 않았습니다."),
+    /** 대사가 PG 조회로 승인되지 않았음을 확인해 실패로 확정했다. (4-4) */
+    PAYMENT_NOT_APPROVED(HttpStatus.CONFLICT, "PAYMENT_012", "결제가 승인되지 않았습니다. 새 주문으로 다시 결제해주세요."),
+    /** 대사가 PG 조회로 취소되지 않았음을 확인해 취소 시도를 실패로 확정했다. (4-4) */
+    PAYMENT_CANCEL_NOT_APPLIED(HttpStatus.CONFLICT, "PAYMENT_013", "취소가 처리되지 않았습니다. 결제는 취소되지 않았으니 다시 취소해주세요.");
 
     private final HttpStatus status;
     private final String code;
