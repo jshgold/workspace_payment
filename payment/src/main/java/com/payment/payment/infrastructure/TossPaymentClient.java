@@ -80,6 +80,12 @@ public class TossPaymentClient implements PaymentClient {
     /** 4xx지만 다시 조회하면 될 수 있는 조회 응답 코드. 일시 오류, 반복 요청 차단. (429는 코드와 상관없이 같다) */
     private static final Set<String> LOOKUP_TRANSIENT_CODES = Set.of("PROVIDER_ERROR", "FORBIDDEN_CONSECUTIVE_REQUEST");
 
+    /**
+     * PG 멱등키 헤더. 승인·취소(POST)에만 붙이고 조회(GET)에는 붙이지 않는다. 공식 문서상 GET에서는 무시된다.
+     * 토스는 키 + API 키 + URL + 메서드가 같으면 실제로 처리하지 않고 첫 응답을 그대로 돌려준다. (15일 유효, 최대 300자)
+     */
+    static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
     /** 연결 실패를 {@link PaymentGatewayException}으로 알릴 때 쓰는 우리 쪽 코드. (PG가 준 코드가 아니다) */
     static final String CONNECTION_FAILED = "CONNECTION_FAILED";
 
@@ -104,6 +110,7 @@ public class TossPaymentClient implements PaymentClient {
         try {
             return tossRestClient.post()
                     .uri(CONFIRM_PATH)
+                    .header(IDEMPOTENCY_KEY_HEADER, request.idempotencyKey())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(new ConfirmBody(request.paymentKey(), request.orderNo(), request.amount()))
                     .exchange((httpRequest, response) -> toResult(request, response));
@@ -136,10 +143,11 @@ public class TossPaymentClient implements PaymentClient {
      * "이미 취소됨"을 거절로 보면, 응답 유실 뒤 다시 취소했을 때 환불이 끝난 주문을 PAID로 되돌리게 된다.
      */
     @Override
-    public PgCancelResult cancel(String paymentKey, String reason) {
+    public PgCancelResult cancel(String paymentKey, String reason, String idempotencyKey) {
         try {
             return tossRestClient.post()
                     .uri(CANCEL_PATH, paymentKey)
+                    .header(IDEMPOTENCY_KEY_HEADER, idempotencyKey)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(new CancelBody(reason))
                     .exchange((httpRequest, response) -> toCancelResult(paymentKey, response));

@@ -12,8 +12,11 @@ import com.payment.payment.service.PaymentCancelStateService;
 import com.payment.payment.service.StartCancelCommand;
 import com.payment.payment.service.StartCancelResult;
 
-import lombok.RequiredArgsConstructor;
+import java.time.Duration;
+
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -31,14 +34,35 @@ import org.springframework.stereotype.Service;
  *   <li>결과 모름 (타임아웃, 5xx): {@code markCancelUnknown} → UNKNOWN / CANCEL_UNKNOWN. PAID로 되돌리면 환불된 결제를 결제 완료로 오인한다</li>
  * </ul>
  * 결과 반영 자체가 실패하면(PG 성공 후 DB 실패 등) CANCELING / REQUESTED로 남고, 대사(4-4)가 확정한다.
+ * <p>
+ * PG 취소가 결과 모름이면 같은 PG 멱등키로 1번 다시 묻는다({@link PgRetry}). PG 키는 취소 시도 기록마다 다르다
+ * ({@link #pgIdempotencyKey}). 주문 기준으로 만들면 거절된 1차 취소의 응답이 2차 취소에도 돌아온다. (phase-04 4-5)
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PaymentCancelFacade {
 
     private final PaymentCancelStateService cancelStateService;
     private final PaymentClient paymentClient;
+    private final Duration pgRetryDelay;
+
+    @Autowired
+    public PaymentCancelFacade(PaymentCancelStateService cancelStateService, PaymentClient paymentClient,
+                               @Value("${app.pg.retry-delay:200ms}") Duration pgRetryDelay) {
+        this.cancelStateService = cancelStateService;
+        this.paymentClient = paymentClient;
+        this.pgRetryDelay = pgRetryDelay;
+    }
+
+    /** 테스트에서 직접 만들 때 쓴다. 재시도 전에 기다리지 않는다. */
+    public PaymentCancelFacade(PaymentCancelStateService cancelStateService, PaymentClient paymentClient) {
+        this(cancelStateService, paymentClient, Duration.ZERO);
+    }
+
+    /** 사용자 취소의 PG 멱등키. 취소 시도 기록({@code payment_cancel}) ID로 만든다. */
+    static String pgIdempotencyKey(CancelTarget target) {
+        return "cancel-" + target.cancelId();
+    }
 
     public PaymentResponse cancel(Long orderId, String idempotencyKey, String reason) {
         // 형식이 틀린 요청은 시도로 기록할 수 없으므로 트랜잭션 전에 거절한다.
@@ -76,7 +100,8 @@ public class PaymentCancelFacade {
 
     private PgCancelResult requestCancel(CancelTarget target, String reason) {
         try {
-            return paymentClient.cancel(target.paymentKey(), reason);
+            return PgRetry.onceOnUnknown(pgRetryDelay, "취소", target.orderId(),
+                    () -> paymentClient.cancel(target.paymentKey(), reason, pgIdempotencyKey(target)));
         } catch (PaymentCancelDeclinedException e) {
             log.warn("PG가 취소를 거절했다. PAID로 되돌린다. orderId={}, paymentKey={}", target.orderId(), target.paymentKey(), e);
             recordFailure(target, ErrorCode.PAYMENT_CANCEL_DECLINED);

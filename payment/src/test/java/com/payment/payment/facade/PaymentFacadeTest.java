@@ -4,9 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -115,7 +117,7 @@ class PaymentFacadeTest {
 
             // then
             assertThat(response).isEqualTo(PAID);
-            verify(paymentClient, never()).cancel(anyString(), anyString());
+            verify(paymentClient, never()).cancel(anyString(), anyString(), anyString());
             verify(paymentStateService, never()).fail(any(), any(), any());
             verify(paymentStateService, never()).markUnknown(any(), any(), any());
         }
@@ -131,7 +133,38 @@ class PaymentFacadeTest {
             assertThatThrownBy(() -> approve()).isInstanceOf(PaymentDeclinedException.class);
             verify(paymentStateService).fail(ORDER_ID, ErrorCode.PAYMENT_DECLINED, null);
             verify(paymentStateService, never()).complete(any(), any());
-            verify(paymentClient, never()).cancel(anyString(), anyString());
+            verify(paymentClient, never()).cancel(anyString(), anyString(), anyString());
+        }
+
+        @Test
+        @DisplayName("첫 승인이 결과 모름이면 같은 요청(같은 PG 멱등키)으로 1번 다시 묻고, 그 결과가 승인이면 반영한다 (4-5)")
+        void timeoutThenRetrySucceeds() {
+            // given
+            startPayingProceeds();
+            PgApproveRequest request = new PgApproveRequest("order-no-1", PAYMENT_KEY, AMOUNT);
+            given(paymentClient.approve(request)).willThrow(new PaymentTimeoutException()).willReturn(APPROVED);
+            given(paymentStateService.complete(ORDER_ID, APPROVED)).willReturn(PAID);
+
+            // when
+            PaymentResponse response = approve();
+
+            // then
+            assertThat(response).isEqualTo(PAID);
+            assertThat(request.idempotencyKey()).isEqualTo("confirm-order-no-1");
+            verify(paymentClient, times(2)).approve(request);
+            verify(paymentStateService, never()).markUnknown(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("거절과 연동 오류는 확정된 결과라 다시 묻지 않는다 (PG 호출 1번)")
+        void confirmedFailureIsNotRetried() {
+            // given
+            startPayingProceeds();
+            given(paymentClient.approve(any())).willThrow(new PaymentGatewayException("CONNECTION_FAILED"));
+
+            // when // then
+            assertThatThrownBy(() -> approve()).isInstanceOf(PaymentGatewayException.class);
+            verify(paymentClient, times(1)).approve(any());
         }
 
         @Test
@@ -148,7 +181,7 @@ class PaymentFacadeTest {
         }
 
         @Test
-        @DisplayName("PG가 타임아웃이면 승인 여부를 모르므로 결과 모름으로 남기고 실패 확정·취소는 하지 않는다")
+        @DisplayName("PG가 재시도까지 타임아웃이면 승인 여부를 모르므로 결과 모름으로 남기고 실패 확정·취소는 하지 않는다 (PG 호출 2번)")
         void timeout() {
             // given
             startPayingProceeds();
@@ -156,9 +189,10 @@ class PaymentFacadeTest {
 
             // when // then
             assertThatThrownBy(() -> approve()).isInstanceOf(PaymentTimeoutException.class);
+            verify(paymentClient, times(2)).approve(any());
             verify(paymentStateService).markUnknown(ORDER_ID, null, null);
             verify(paymentStateService, never()).fail(any(), any(), any());
-            verify(paymentClient, never()).cancel(anyString(), anyString());
+            verify(paymentClient, never()).cancel(anyString(), anyString(), anyString());
         }
 
         @Test
@@ -172,7 +206,7 @@ class PaymentFacadeTest {
             assertThatThrownBy(() -> approve())
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_AMOUNT_MISMATCH));
-            verify(paymentClient).cancel(PAYMENT_KEY, "승인 금액 불일치");
+            verify(paymentClient).cancel(eq(PAYMENT_KEY), eq("승인 금액 불일치"), anyString());
             verify(paymentStateService).fail(ORDER_ID, ErrorCode.PAYMENT_AMOUNT_MISMATCH, AMOUNT - 1);
             verify(paymentStateService, never()).complete(any(), any());
         }
@@ -187,7 +221,7 @@ class PaymentFacadeTest {
 
             // when // then
             assertThatThrownBy(() -> approve()).isInstanceOf(IllegalStateException.class);
-            verify(paymentClient, never()).cancel(anyString(), anyString());
+            verify(paymentClient, never()).cancel(anyString(), anyString(), anyString());
             verify(paymentStateService).markUnknown(ORDER_ID, null, AMOUNT);
             verify(paymentStateService, never()).fail(any(), any(), any());
         }
@@ -198,7 +232,7 @@ class PaymentFacadeTest {
             // given
             startPayingProceeds();
             given(paymentClient.approve(any())).willReturn(new PgApproveResult(PAYMENT_KEY, AMOUNT - 1));
-            willThrow(new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.")).given(paymentClient).cancel(anyString(), anyString());
+            willThrow(new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.")).given(paymentClient).cancel(anyString(), anyString(), anyString());
 
             // when // then
             assertThatThrownBy(() -> approve()).isInstanceOf(PaymentCancelDeclinedException.class);

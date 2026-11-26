@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import java.util.Optional;
@@ -29,7 +30,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -45,7 +45,8 @@ class PaymentCancelFacadeTest {
     private static final String KEY = "k1";
     private static final String REASON = "단순 변심";
     private static final String PAYMENT_KEY = "payment-key-1";
-    private static final CancelTarget TARGET = new CancelTarget(10L, ORDER_ID, PAYMENT_KEY);
+    private static final Long CANCEL_ID = 10L;
+    private static final CancelTarget TARGET = new CancelTarget(CANCEL_ID, ORDER_ID, PAYMENT_KEY);
     private static final StartCancelCommand COMMAND = new StartCancelCommand(ORDER_ID, KEY, REASON);
     private static final PaymentResponse CANCELED =
             new PaymentResponse(ORDER_ID, 5L, PAYMENT_KEY, 20_000L, OrderStatus.CANCELED, PaymentStatus.CANCELED);
@@ -56,11 +57,11 @@ class PaymentCancelFacadeTest {
     @Mock
     private PaymentClient paymentClient;
 
-    @InjectMocks
     private PaymentCancelFacade facade;
 
     @BeforeEach
     void setUp() {
+        facade = new PaymentCancelFacade(stateService, paymentClient);
         given(stateService.startCanceling(COMMAND)).willReturn(new StartCancelResult.Proceed(TARGET));
     }
 
@@ -68,7 +69,7 @@ class PaymentCancelFacadeTest {
     @DisplayName("PG 취소가 성공하면 completeCancel로 반영하고 그 결과를 돌려준다")
     void success() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON)).willReturn(PgCancelResult.canceled());
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID)).willReturn(PgCancelResult.canceled());
         given(stateService.completeCancel(TARGET)).willReturn(CANCELED);
 
         // when
@@ -84,7 +85,7 @@ class PaymentCancelFacadeTest {
     @DisplayName("PG 취소는 성공했지만 결과 반영(DB)이 실패하면 예외를 그대로 던지고, 실패나 결과 모름으로 기록하지 않는다 (CANCELING으로 남아 대사 대상)")
     void completeFailsAfterPgSuccess() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON)).willReturn(PgCancelResult.canceled());
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID)).willReturn(PgCancelResult.canceled());
         given(stateService.completeCancel(TARGET)).willThrow(new QueryTimeoutException("DB 응답 없음"));
 
         // when // then
@@ -97,7 +98,7 @@ class PaymentCancelFacadeTest {
     @DisplayName("PG가 거절하면 PAYMENT_CANCEL_DECLINED로 실패를 기록하고 거절 예외를 던진다")
     void declined() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON))
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID))
                 .willThrow(new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다."));
 
         // when // then
@@ -110,7 +111,7 @@ class PaymentCancelFacadeTest {
     @DisplayName("요청이 PG에 닿지 않으면 PAYMENT_CANCEL_GATEWAY_ERROR로 실패를 기록하고 같은 코드로 응답한다")
     void gatewayError() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON)).willThrow(new PaymentGatewayException("CONNECTION_FAILED"));
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID)).willThrow(new PaymentGatewayException("CONNECTION_FAILED"));
 
         // when // then
         assertThatThrownBy(() -> facade.cancel(ORDER_ID, KEY, REASON))
@@ -120,24 +121,43 @@ class PaymentCancelFacadeTest {
     }
 
     @Test
-    @DisplayName("결과를 모르면 결과 모름으로 기록하고 PAYMENT_CANCEL_UNKNOWN으로 응답한다. 실패로 기록하지 않는다")
+    @DisplayName("재시도까지 결과를 모르면 결과 모름으로 기록하고 PAYMENT_CANCEL_UNKNOWN으로 응답한다. 실패로 기록하지 않는다 (PG 호출 2번, 같은 PG 키)")
     void unknown() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON)).willThrow(new PaymentTimeoutException());
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID)).willThrow(new PaymentTimeoutException());
 
         // when // then
         assertThatThrownBy(() -> facade.cancel(ORDER_ID, KEY, REASON))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_CANCEL_UNKNOWN));
+        verify(paymentClient, times(2)).cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID);
         verify(stateService).markCancelUnknown(TARGET);
         verify(stateService, never()).failCancel(any(), any());
+    }
+
+    @Test
+    @DisplayName("첫 취소가 결과 모름이면 같은 PG 키(cancel-취소시도ID)로 1번 다시 묻고, 그 결과가 취소면 반영한다 (4-5)")
+    void unknownThenRetrySucceeds() {
+        // given
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID))
+                .willThrow(new PaymentTimeoutException())
+                .willReturn(PgCancelResult.canceled());
+        given(stateService.completeCancel(TARGET)).willReturn(CANCELED);
+
+        // when
+        PaymentResponse response = facade.cancel(ORDER_ID, KEY, REASON);
+
+        // then
+        assertThat(response).isEqualTo(CANCELED);
+        verify(paymentClient, times(2)).cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID);
+        verify(stateService, never()).markCancelUnknown(any());
     }
 
     @Test
     @DisplayName("실패 기록 자체가 실패해도 사용자에게는 원래 PG 거절을 돌려준다")
     void failRecordErrorDoesNotHideCause() {
         // given
-        given(paymentClient.cancel(PAYMENT_KEY, REASON))
+        given(paymentClient.cancel(PAYMENT_KEY, REASON, "cancel-" + CANCEL_ID))
                 .willThrow(new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다."));
         willThrow(new QueryTimeoutException("DB 응답 없음")).given(stateService).failCancel(TARGET, ErrorCode.PAYMENT_CANCEL_DECLINED);
 
@@ -157,6 +177,6 @@ class PaymentCancelFacadeTest {
 
         // then
         assertThat(response).isEqualTo(CANCELED);
-        verify(paymentClient, never()).cancel(any(), any());
+        verify(paymentClient, never()).cancel(any(), any(), any());
     }
 }

@@ -165,7 +165,9 @@ public abstract class PaymentAttemptRecordTestSupport extends IntegrationTestSup
         assertThatThrownBy(() -> approvalFacade.approve(order.getId(), "key-1", AMOUNT, PAYMENT_KEY))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS));
-        assertThat(fakePaymentClient.approveCallCount()).isEqualTo(1);
+        assertThat(fakePaymentClient.approveCallCount())
+                .as("첫 호출 + 같은 PG 멱등키로 재시도 1번(4-5). 클라이언트의 같은 키 재요청은 PG를 부르지 않는다")
+                .isEqualTo(2);
     }
 
     private Throwable catchRetry(Runnable retry) {

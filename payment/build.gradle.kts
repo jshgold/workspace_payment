@@ -83,6 +83,8 @@ val measurementTest by tasks.registering(Test::class) {
     useJUnitPlatform {
         includeTags("measurement")
     }
+    // -Dmeasure.xxx=값 으로 넘긴 측정 조건을 테스트 JVM에 전달한다.
+    systemProperties(System.getProperties().filterKeys { it.toString().startsWith("measure.") }.mapKeys { it.key.toString() })
 }
 
 // build.gradle.kts

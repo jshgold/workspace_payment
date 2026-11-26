@@ -49,6 +49,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 속도 제한과 PG 지연을 없애 케이스마다의 DB 처리 비용을 T0(2.4ms)·F0(3.0ms)와 비교한다. 운영 처리량이 아니다.
  * <p>
  * 실행: {@code ./gradlew measurementTest --tests "*ReconciliationCaseRoundMeasurementTest" -i}
+ * <p>
+ * 운영 설정으로 돌리기 (2026-11-26): 건수·초당 호출 수·PG 지연을 시스템 속성으로 바꾼다. 기본값은 위 조건(300 / 1000 / 0ms).
+ * {@code ./gradlew measurementTest --tests "*ReconciliationCaseRoundMeasurementTest" -Dmeasure.count=50 -Dmeasure.perSecond=5 -Dmeasure.pgDelayMs=100 -i}
  */
 @Slf4j
 @Tag("measurement")
@@ -59,7 +62,9 @@ class ReconciliationCaseRoundMeasurementTest extends IntegrationTestSupport {
     private static final int QUANTITY = 1;
     private static final long SERVER_AMOUNT = PRICE * QUANTITY;
     private static final long WRONG_AMOUNT = 9_000L;
-    private static final int COUNT = 300;
+    private static final int COUNT = Integer.getInteger("measure.count", 300);
+    private static final int CALLS_PER_SECOND = Integer.getInteger("measure.perSecond", 1000);
+    private static final Duration PG_DELAY = Duration.ofMillis(Long.getLong("measure.pgDelayMs", 0L));
     private static final int AGED_MINUTES = 6;
 
     private static final List<String> ROWS = new ArrayList<>();
@@ -90,7 +95,7 @@ class ReconciliationCaseRoundMeasurementTest extends IntegrationTestSupport {
     void setUp() {
         fakePaymentClient.reset();
         facade = new PaymentReconciliationFacade(reconciliationStateService, fakePaymentClient,
-                new ReconciliationProperties(Duration.ofMinutes(5), Duration.ofMinutes(1), 500, Duration.ofSeconds(50), 3, 1000));
+                new ReconciliationProperties(Duration.ofMinutes(5), Duration.ofMinutes(1), 500, Duration.ofSeconds(50), 3, CALLS_PER_SECOND));
         approveFacade = new PaymentFacade(approveStateService, fakePaymentClient);
         cancelFacade = new PaymentCancelFacade(cancelStateService, fakePaymentClient);
         product = productRepository.save(Product.create("키보드", PRICE, COUNT * QUANTITY + 100));
@@ -107,8 +112,8 @@ class ReconciliationCaseRoundMeasurementTest extends IntegrationTestSupport {
 
     @AfterAll
     static void printTable() {
-        log.info("[케이스 측정 결과]\n| 코드 | 대상 | 조회 결과 | 대상 수 | 확정 | 건너뜀 | PG 실패 | 남은 대상 | 소요 | 건당 | PG 조회 | PG 취소 | 주문 상태 | 재고 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n{}",
-                String.join("\n", ROWS));
+        log.info("[케이스 측정 결과] 대상 {}건, 초당 {}, PG 지연 {}ms\n| 코드 | 대상 | 조회 결과 | 대상 수 | 확정 | 건너뜀 | PG 실패 | 남은 대상 | 소요 | 건당 | PG 조회 | PG 취소 | 주문 상태 | 재고 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n{}",
+                COUNT, CALLS_PER_SECOND, PG_DELAY.toMillis(), String.join("\n", ROWS));
     }
 
     // ---- 승인 대사 ----
@@ -192,6 +197,7 @@ class ReconciliationCaseRoundMeasurementTest extends IntegrationTestSupport {
         prepare(target);
         fakePaymentClient.reset();
         pg.accept(fakePaymentClient);
+        fakePaymentClient.delay(PG_DELAY); // 대상을 다 만든 뒤에 건다 (승인에도 적용되므로)
         int stockBefore = stock();
 
         // when

@@ -3,6 +3,7 @@ package com.payment.payment.facade;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
@@ -113,7 +114,8 @@ public class PaymentReconciliationFacade {
         log.error("[{}] PG 승인 금액이 서버 금액과 다르다. 다시 취소한다. orderId={}, 서버 금액={}, PG 금액={}",
                 PAYMENT_JOB, target.orderId(), target.amount(), pgAmount);
         try {
-            paymentClient.cancel(target.paymentKey(), "승인 금액 불일치");
+            // 시도 기록이 없는 취소라 호출마다 새 키를 쓴다. 앞선 보상 취소의 에러 응답이 같은 키로 저장돼 있을 수 있다.
+            paymentClient.cancel(target.paymentKey(), "승인 금액 불일치", UUID.randomUUID().toString());
         } catch (RuntimeException e) {
             log.error("[{}] 재취소 실패. 돈이 묶여 있을 수 있어 결과 모름으로 둔다. orderId={}, cause={}",
                     PAYMENT_JOB, target.orderId(), e.getClass().getSimpleName());

@@ -13,8 +13,12 @@ import com.payment.payment.service.PaymentTarget;
 import com.payment.payment.service.StartPayingCommand;
 import com.payment.payment.service.StartPayingResult;
 
-import lombok.RequiredArgsConstructor;
+import java.time.Duration;
+import java.util.UUID;
+
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -38,14 +42,30 @@ import org.springframework.stereotype.Service;
  * 결과 모름으로 남기고 대사가 PAID로 확정한다. (intent 8절 "승인 후 DB 반영 실패", 2026-11-26)
  * <p>
  * 요청 1건의 트랜잭션은 2번이다. (트러블슈팅 개선 B, 재설계 전 4번)
+ * <p>
+ * PG 승인·보상 취소가 결과 모름이면 같은 PG 멱등키로 1번 다시 묻는다({@link PgRetry}). 승인 키는 주문번호로 만들고
+ * ({@link PgApproveRequest#idempotencyKey()}), 보상 취소 키는 시도 기록이 없으므로 호출마다 새로 만든다. (phase-04 4-5)
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PaymentFacade {
 
     private final PaymentStateService paymentStateService;
     private final PaymentClient paymentClient;
+    private final Duration pgRetryDelay;
+
+    @Autowired
+    public PaymentFacade(PaymentStateService paymentStateService, PaymentClient paymentClient,
+                         @Value("${app.pg.retry-delay:200ms}") Duration pgRetryDelay) {
+        this.paymentStateService = paymentStateService;
+        this.paymentClient = paymentClient;
+        this.pgRetryDelay = pgRetryDelay;
+    }
+
+    /** 테스트에서 직접 만들 때 쓴다. 재시도 전에 기다리지 않는다. */
+    public PaymentFacade(PaymentStateService paymentStateService, PaymentClient paymentClient) {
+        this(paymentStateService, paymentClient, Duration.ZERO);
+    }
 
     public PaymentResponse approve(Long orderId, String idempotencyKey, long requestedAmount, String paymentKey) {
         // 형식이 틀린 요청은 시도로 기록할 수 없으므로(필수 값 없음) 트랜잭션 전에 거절한다.
@@ -95,8 +115,9 @@ public class PaymentFacade {
 
     private PgApproveResult requestApproval(PaymentTarget target, String paymentKey) {
         try {
-            return PaymentSegmentTimer.time("pgApprove",
-                    () -> paymentClient.approve(new PgApproveRequest(target.orderNo(), paymentKey, target.amount())));
+            PgApproveRequest request = new PgApproveRequest(target.orderNo(), paymentKey, target.amount());
+            return PaymentSegmentTimer.time("pgApprove", () -> PgRetry.onceOnUnknown(
+                    pgRetryDelay, "승인", target.orderId(), () -> paymentClient.approve(request)));
         } catch (PaymentDeclinedException e) {
             recordFailure(target.orderId(), ErrorCode.PAYMENT_DECLINED, null);
             throw e;
@@ -129,7 +150,10 @@ public class PaymentFacade {
      */
     private void compensate(Long orderId, PgApproveResult approveResult, ErrorCode failureCode, String reason) {
         try {
-            PaymentSegmentTimer.time("pgCancel", () -> paymentClient.cancel(approveResult.pgTransactionId(), reason));
+            // 보상 취소는 시도 기록이 없으므로 호출마다 키를 새로 만든다. 이 호출 안의 재시도만 같은 키를 쓴다.
+            String pgIdempotencyKey = UUID.randomUUID().toString();
+            PaymentSegmentTimer.time("pgCancel", () -> PgRetry.onceOnUnknown(pgRetryDelay, "보상 취소", orderId,
+                    () -> paymentClient.cancel(approveResult.pgTransactionId(), reason, pgIdempotencyKey)));
         } catch (RuntimeException e) {
             log.error("보상 취소 실패. 돈이 묶여 있을 수 있어 결과 모름으로 남긴다. orderId={}, pgTransactionId={}",
                     orderId, approveResult.pgTransactionId(), e);
