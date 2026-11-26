@@ -21,4 +21,14 @@ public record PgApproveRequest(String orderNo, String paymentKey, long amount) {
             throw new IllegalArgumentException("승인 금액은 0보다 커야 합니다.");
         }
     }
+
+    /**
+     * PG에 보내는 멱등키(서버 → PG). 주문 하나에 승인 시도는 하나뿐이라(Order:Payment = 1:1) 주문번호로 만든다.
+     * 응답을 놓쳐 같은 요청을 다시 보내면 PG가 첫 응답을 그대로 돌려준다. (intent 8절 "PG 멱등키 값", phase-04 4-5)
+     * <p>
+     * 클라이언트가 보낸 {@code Idempotency-Key}(고객 → 서버)와는 다른 값이다. 그 키는 PG로 넘기지 않는다.
+     */
+    public String idempotencyKey() {
+        return "confirm-" + orderNo;
+    }
 }

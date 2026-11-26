@@ -2,6 +2,7 @@ package com.payment.payment.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -70,11 +71,12 @@ class TossPaymentClientTest {
     }
 
     @Test
-    @DisplayName("승인 요청은 paymentKey, 주문번호(orderNo), 금액을 body에 담아 confirm 경로로 POST한다")
+    @DisplayName("승인 요청은 paymentKey, 주문번호(orderNo), 금액을 body에 담고 PG 멱등키(confirm-주문번호)를 Idempotency-Key 헤더에 담아 confirm 경로로 POST한다")
     void sendsConfirmRequest() {
         // given
         server.expect(requestTo(CONFIRM_URL))
                 .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Idempotency-Key", "confirm-" + ORDER_NO))
                 .andExpect(jsonPath("$.paymentKey").value("payment-key-1"))
                 .andExpect(jsonPath("$.orderId").value(ORDER_NO))
                 .andExpect(jsonPath("$.amount").value(30_000))

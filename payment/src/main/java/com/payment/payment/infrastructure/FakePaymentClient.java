@@ -2,10 +2,13 @@ package com.payment.payment.infrastructure;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
@@ -35,7 +38,12 @@ import org.springframework.stereotype.Component;
  *   <li>{@link #willApproveWithAmount(long)}: 요청과 다른 금액으로 승인 (승인 후 보상 취소 경로 재현)</li>
  *   <li>{@link #approveCallCount()}: PG가 실제로 몇 번 호출됐는지. 멱등성 검증(3-4)의 핵심 증거</li>
  *   <li>{@link #willLookup} / {@link #willLookupNotFound()} / {@link #willTimeoutLookup()}: 다음 조회의 결과 (대사, 4-4)</li>
+ *   <li>{@link #willLoseApproveResponseOnce()} / {@link #willLoseCancelResponseOnce()}: 다음 호출은 처리하지만 응답을 잃는다 (4-5)</li>
  * </ul>
+ * <h3>PG 멱등키 (phase-04 4-5)</h3>
+ * 토스처럼 멱등키별로 첫 응답을 저장해 두고, 같은 키로 다시 오면 처리하지 않고 그 응답을 돌려준다.
+ * 저장하는 것은 PG가 실제로 처리한 결과(승인, 거절, 취소, 이미 취소됨)뿐이다. 타임아웃·연결 실패는 저장하지 않는다.
+ * 호출 횟수({@link #approveCallCount()})와 실제 처리 횟수({@link #approveProcessedCount()})를 따로 센다.
  * 동시성 테스트에서 여러 스레드가 호출하므로 상태는 스레드 안전하게 관리한다.
  * 시나리오 설정은 테스트 시작 전에 한 번 하고, 테스트 사이에는 {@link #reset()}으로 초기화한다.
  * <p>
@@ -66,6 +74,15 @@ public class FakePaymentClient implements PaymentClient {
     private final AtomicInteger cancelCalls = new AtomicInteger();
     private final AtomicInteger lookupCalls = new AtomicInteger();
     private final List<String> canceledTransactionIds = new CopyOnWriteArrayList<>();
+
+    private final Map<String, Supplier<PgApproveResult>> approveReplies = new ConcurrentHashMap<>();
+    private final Map<String, Supplier<PgCancelResult>> cancelReplies = new ConcurrentHashMap<>();
+    private final AtomicInteger approveProcessed = new AtomicInteger();
+    private final AtomicInteger cancelProcessed = new AtomicInteger();
+    private final List<String> approveIdempotencyKeys = new CopyOnWriteArrayList<>();
+    private final List<String> cancelIdempotencyKeys = new CopyOnWriteArrayList<>();
+    private volatile boolean loseApproveResponse = false;
+    private volatile boolean loseCancelResponse = false;
 
     /** 단위 테스트용. 지연 없이 시작한다. */
     public FakePaymentClient() {
@@ -114,6 +131,11 @@ public class FakePaymentClient implements PaymentClient {
         this.delay = delay;
     }
 
+    /** PG가 취소를 처리한다. (기본값) */
+    public void willCancel() {
+        this.cancelScenario = CancelScenario.CANCEL;
+    }
+
     /** PG가 취소를 명확히 거절한다. 결제는 살아 있다. */
     public void willFailCancel() {
         this.cancelScenario = CancelScenario.DECLINE;
@@ -155,6 +177,36 @@ public class FakePaymentClient implements PaymentClient {
         this.lookupScenario = LookupScenario.TIMEOUT;
     }
 
+    /** 다음 승인 호출은 PG에서 처리되지만 응답이 오는 길에 끊긴다. (호출자는 타임아웃을 받는다) */
+    public void willLoseApproveResponseOnce() {
+        this.loseApproveResponse = true;
+    }
+
+    /** 다음 취소 호출은 PG에서 처리되지만 응답이 오는 길에 끊긴다. */
+    public void willLoseCancelResponseOnce() {
+        this.loseCancelResponse = true;
+    }
+
+    /** PG가 실제로 승인·거절을 처리한 횟수. 같은 키의 재요청(replay)은 세지 않는다. */
+    public int approveProcessedCount() {
+        return approveProcessed.get();
+    }
+
+    /** PG가 실제로 취소·거절을 처리한 횟수. 같은 키의 재요청(replay)은 세지 않는다. */
+    public int cancelProcessedCount() {
+        return cancelProcessed.get();
+    }
+
+    /** 승인 호출마다 받은 PG 멱등키 (호출 순서) */
+    public List<String> approveIdempotencyKeys() {
+        return List.copyOf(approveIdempotencyKeys);
+    }
+
+    /** 취소 호출마다 받은 PG 멱등키 (호출 순서) */
+    public List<String> cancelIdempotencyKeys() {
+        return List.copyOf(cancelIdempotencyKeys);
+    }
+
     public int lookupCallCount() {
         return lookupCalls.get();
     }
@@ -183,34 +235,88 @@ public class FakePaymentClient implements PaymentClient {
         cancelCalls.set(0);
         lookupCalls.set(0);
         canceledTransactionIds.clear();
+        approveReplies.clear();
+        cancelReplies.clear();
+        approveProcessed.set(0);
+        cancelProcessed.set(0);
+        approveIdempotencyKeys.clear();
+        cancelIdempotencyKeys.clear();
+        this.loseApproveResponse = false;
+        this.loseCancelResponse = false;
     }
 
     @Override
     public PgApproveResult approve(PgApproveRequest request) {
         approveCalls.incrementAndGet();
+        approveIdempotencyKeys.add(request.idempotencyKey());
         simulateLatency();
-        return switch (scenario) {
-            case APPROVE -> new PgApproveResult("fake-" + UUID.randomUUID(),
-                    approvedAmountOverride != null ? approvedAmountOverride : request.amount());
-            case DECLINE -> throw new PaymentDeclinedException(declineReason);
+
+        Supplier<PgApproveResult> replay = approveReplies.get(request.idempotencyKey());
+        if (replay != null) {
+            return replay.get();
+        }
+
+        Supplier<PgApproveResult> reply = switch (scenario) {
+            case APPROVE -> {
+                PgApproveResult result = new PgApproveResult("fake-" + UUID.randomUUID(),
+                        approvedAmountOverride != null ? approvedAmountOverride : request.amount());
+                yield () -> result;
+            }
+            case DECLINE -> {
+                String reason = declineReason;
+                yield () -> {
+                    throw new PaymentDeclinedException(reason);
+                };
+            }
             case TIMEOUT -> throw new PaymentTimeoutException();
         };
+        Supplier<PgApproveResult> first = approveReplies.putIfAbsent(request.idempotencyKey(), reply);
+        if (first != null) {
+            return first.get();
+        }
+        approveProcessed.incrementAndGet();
+
+        if (loseApproveResponse) {
+            loseApproveResponse = false;
+            throw new PaymentTimeoutException();
+        }
+        return reply.get();
     }
 
     @Override
-    public PgCancelResult cancel(String paymentKey, String reason) {
+    public PgCancelResult cancel(String paymentKey, String reason, String idempotencyKey) {
         cancelCalls.incrementAndGet();
+        cancelIdempotencyKeys.add(idempotencyKey);
         simulateLatency();
-        return switch (cancelScenario) {
-            case CANCEL -> {
-                canceledTransactionIds.add(paymentKey);
-                yield PgCancelResult.canceled();
-            }
-            case ALREADY_CANCELED -> PgCancelResult.wasAlreadyCanceled();
-            case DECLINE -> throw new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.");
+
+        Supplier<PgCancelResult> replay = cancelReplies.get(idempotencyKey);
+        if (replay != null) {
+            return replay.get();
+        }
+
+        Supplier<PgCancelResult> reply = switch (cancelScenario) {
+            case CANCEL -> () -> PgCancelResult.canceled();
+            case ALREADY_CANCELED -> () -> PgCancelResult.wasAlreadyCanceled();
+            case DECLINE -> () -> {
+                throw new PaymentCancelDeclinedException("NOT_CANCELABLE_PAYMENT", "취소 할 수 없는 결제 입니다.");
+            };
             case TIMEOUT -> throw new PaymentTimeoutException();
             case CONNECTION_FAILED -> throw new PaymentGatewayException(TossPaymentClient.CONNECTION_FAILED);
         };
+        Supplier<PgCancelResult> first = cancelReplies.putIfAbsent(idempotencyKey, reply);
+        if (first != null) {
+            return first.get();
+        }
+        cancelProcessed.incrementAndGet();
+        if (cancelScenario == CancelScenario.CANCEL) {
+            canceledTransactionIds.add(paymentKey);
+        }
+
+        if (loseCancelResponse) {
+            loseCancelResponse = false;
+            throw new PaymentTimeoutException();
+        }
+        return reply.get();
     }
 
     /** 시나리오를 정하지 않고 조회하면 테스트 준비가 빠진 것이므로 바로 알린다. (기본 결과를 지어내지 않는다) */

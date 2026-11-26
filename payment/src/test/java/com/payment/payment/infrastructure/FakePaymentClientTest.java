@@ -2,6 +2,7 @@ package com.payment.payment.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.time.Duration;
 
@@ -91,7 +92,7 @@ class FakePaymentClientTest {
     @DisplayName("취소하면 취소된 거래 ID와 호출 횟수가 기록된다")
     void cancel() {
         // when
-        client.cancel("fake-1", "재고 부족");
+        client.cancel("fake-1", "재고 부족", "cancel-key-1");
 
         // then
         assertThat(client.cancelCallCount()).isEqualTo(1);
@@ -105,7 +106,7 @@ class FakePaymentClientTest {
         client.willFailCancel();
 
         // when // then
-        assertThatThrownBy(() -> client.cancel("fake-1", "재고 부족"))
+        assertThatThrownBy(() -> client.cancel("fake-1", "재고 부족", "cancel-key-1"))
                 .isInstanceOf(PaymentCancelDeclinedException.class);
         assertThat(client.cancelCallCount()).isEqualTo(1);
         assertThat(client.canceledTransactionIds()).isEmpty();
@@ -118,13 +119,13 @@ class FakePaymentClientTest {
         client.willTimeoutCancel();
 
         // when // then
-        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심", "cancel-key-1")).isInstanceOf(PaymentTimeoutException.class);
 
         // given
         client.willFailCancelConnection();
 
         // when // then
-        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심")).isInstanceOf(PaymentGatewayException.class);
+        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심", "cancel-key-1")).isInstanceOf(PaymentGatewayException.class);
         assertThat(client.cancelCallCount()).isEqualTo(2);
         assertThat(client.canceledTransactionIds()).isEmpty();
     }
@@ -136,7 +137,7 @@ class FakePaymentClientTest {
         client.willAlreadyCanceled();
 
         // when
-        PgCancelResult result = client.cancel("fake-1", "단순 변심");
+        PgCancelResult result = client.cancel("fake-1", "단순 변심", "cancel-key-1");
 
         // then
         assertThat(result.alreadyCanceled()).isTrue();
@@ -157,5 +158,84 @@ class FakePaymentClientTest {
         // then
         assertThat(result.approvedAmount()).isEqualTo(30_000L);
         assertThat(client.approveCallCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 PG 멱등키로 다시 승인하면 처리하지 않고 첫 승인 결과(같은 거래 ID)를 돌려준다")
+    void approveReplaysFirstResultForSameKey() {
+        // given
+        PgApproveResult first = client.approve(request());
+
+        // when
+        PgApproveResult second = client.approve(request());
+
+        // then
+        assertThat(second).isEqualTo(first);
+        assertThat(client.approveCallCount()).isEqualTo(2);
+        assertThat(client.approveProcessedCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 PG 멱등키면 시나리오가 바뀌어도 첫 거절을 그대로 돌려준다 (토스처럼 첫 응답 저장)")
+    void approveReplaysFirstDeclineForSameKey() {
+        // given
+        client.willDecline("한도 초과");
+        assertThatThrownBy(() -> client.approve(request())).isInstanceOf(PaymentDeclinedException.class);
+        client.willApprove();
+
+        // when // then
+        assertThatThrownBy(() -> client.approve(request())).isInstanceOf(PaymentDeclinedException.class);
+        assertThat(client.approveProcessedCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("응답 유실: 승인은 처리하고 타임아웃을 던진 뒤, 같은 키로 다시 오면 처리한 결과를 돌려준다")
+    void lostApproveResponseThenReplay() {
+        // given
+        client.willLoseApproveResponseOnce();
+        assertThatThrownBy(() -> client.approve(request())).isInstanceOf(PaymentTimeoutException.class);
+
+        // when
+        PgApproveResult result = client.approve(request());
+
+        // then
+        assertThat(result.approvedAmount()).isEqualTo(30_000L);
+        assertThat(client.approveProcessedCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("타임아웃 시나리오는 PG가 처리하지 않은 것으로 보고 저장하지 않는다. 다음 호출은 새로 처리된다")
+    void timeoutIsNotStored() {
+        // given
+        client.willTimeout();
+        assertThatThrownBy(() -> client.approve(request())).isInstanceOf(PaymentTimeoutException.class);
+        client.willApprove();
+
+        // when
+        PgApproveResult result = client.approve(request());
+
+        // then
+        assertThat(result.approvedAmount()).isEqualTo(30_000L);
+        assertThat(client.approveProcessedCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("취소는 같은 PG 멱등키면 시나리오가 바뀌어도 첫 거절을 돌려주고, 새 키면 새로 처리한다")
+    void cancelReplaysBySameKeyOnly() {
+        // given
+        client.willFailCancel();
+        assertThatThrownBy(() -> client.cancel("fake-1", "단순 변심", "cancel-1"))
+                .isInstanceOf(PaymentCancelDeclinedException.class);
+        client.willCancel();
+
+        // when
+        Throwable sameKey = catchThrowable(() -> client.cancel("fake-1", "단순 변심", "cancel-1"));
+        PgCancelResult newKey = client.cancel("fake-1", "단순 변심", "cancel-2");
+
+        // then
+        assertThat(sameKey).isInstanceOf(PaymentCancelDeclinedException.class);
+        assertThat(newKey.alreadyCanceled()).isFalse();
+        assertThat(client.cancelCallCount()).isEqualTo(3);
+        assertThat(client.cancelProcessedCount()).isEqualTo(2);
     }
 }

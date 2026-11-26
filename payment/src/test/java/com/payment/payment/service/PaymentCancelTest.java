@@ -272,7 +272,9 @@ class PaymentCancelTest extends IntegrationTestSupport {
         // then
         assertThat(errorCode(sameKey)).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS);
         assertThat(errorCode(newKey)).isEqualTo(ErrorCode.PAYMENT_IN_PROGRESS);
-        assertThat(fakePaymentClient.cancelCallCount()).isEqualTo(1);
+        assertThat(fakePaymentClient.cancelCallCount())
+                .as("첫 호출 + 같은 PG 멱등키로 재시도 1번(4-5). 같은 키·새 키 재요청은 PG를 부르지 않는다")
+                .isEqualTo(2);
         assertThat(attempts(order)).as("새 키 요청은 시도가 아니므로 기록하지 않는다").hasSize(1);
     }
 

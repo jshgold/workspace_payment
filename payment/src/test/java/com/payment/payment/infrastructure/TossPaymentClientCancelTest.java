@@ -2,6 +2,7 @@ package com.payment.payment.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -57,11 +58,12 @@ class TossPaymentClientCancelTest {
     }
 
     @Test
-    @DisplayName("취소 요청은 paymentKey를 경로에, 사유를 cancelReason에 담아 POST하고 금액은 보내지 않는다(전액 취소)")
+    @DisplayName("취소 요청은 paymentKey를 경로에, 사유를 cancelReason에, 받은 PG 멱등키를 Idempotency-Key 헤더에 담아 POST하고 금액은 보내지 않는다(전액 취소)")
     void sendsCancelRequest() {
         // given
         server.expect(requestTo(CANCEL_URL))
                 .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Idempotency-Key", "cancel-1"))
                 .andExpect(jsonPath("$.cancelReason").value("단순 변심"))
                 .andExpect(jsonPath("$.cancelAmount").doesNotExist())
                 .andRespond(withSuccess("""
@@ -69,7 +71,7 @@ class TossPaymentClientCancelTest {
                         """, MediaType.APPLICATION_JSON));
 
         // when
-        PgCancelResult result = client.cancel(PAYMENT_KEY, "단순 변심");
+        PgCancelResult result = client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1");
 
         // then
         assertThat(result.alreadyCanceled()).isFalse();
@@ -84,7 +86,7 @@ class TossPaymentClientCancelTest {
         respondWith(400, error(code));
 
         // when
-        PgCancelResult result = client.cancel(PAYMENT_KEY, "단순 변심");
+        PgCancelResult result = client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1");
 
         // then
         assertThat(result.alreadyCanceled()).isTrue();
@@ -104,7 +106,7 @@ class TossPaymentClientCancelTest {
         respondWith(status, error(code));
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심"))
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1"))
                 .isInstanceOf(PaymentCancelDeclinedException.class)
                 .hasMessageContaining(code);
     }
@@ -124,7 +126,7 @@ class TossPaymentClientCancelTest {
         respondWith(status, error(code));
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1")).isInstanceOf(PaymentTimeoutException.class);
     }
 
     @ParameterizedTest(name = "{0} {1}")
@@ -135,7 +137,7 @@ class TossPaymentClientCancelTest {
         respondWith(status, error(code));
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심")).isInstanceOf(PaymentGatewayException.class);
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1")).isInstanceOf(PaymentGatewayException.class);
     }
 
     @Test
@@ -147,14 +149,14 @@ class TossPaymentClientCancelTest {
                 """);
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1")).isInstanceOf(PaymentTimeoutException.class);
 
         // given
         server.reset();
         respondWith(200, "");
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1")).isInstanceOf(PaymentTimeoutException.class);
     }
 
     @Test
@@ -166,7 +168,7 @@ class TossPaymentClientCancelTest {
         });
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심"))
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1"))
                 .isInstanceOf(PaymentGatewayException.class)
                 .hasMessageContaining(TossPaymentClient.CONNECTION_FAILED);
     }
@@ -180,6 +182,6 @@ class TossPaymentClientCancelTest {
         });
 
         // when // then
-        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심")).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.cancel(PAYMENT_KEY, "단순 변심", "cancel-1")).isInstanceOf(PaymentTimeoutException.class);
     }
 }

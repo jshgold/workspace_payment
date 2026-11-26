@@ -2,6 +2,7 @@ package com.payment.payment.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.headerDoesNotExist;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
@@ -46,8 +47,10 @@ class TossPaymentClientLookupTest {
         client = new TossPaymentClient(builder.build());
     }
 
+    /** 모든 조회 테스트에서 PG 멱등키 헤더가 붙지 않는지도 함께 본다. 조회(GET)에는 키를 붙이지 않는다. (phase-04 4-5) */
     private void respondWith(int status, String body) {
         server.expect(requestTo(LOOKUP_URL)).andExpect(method(HttpMethod.GET))
+                .andExpect(headerDoesNotExist("Idempotency-Key"))
                 .andRespond(withStatus(HttpStatusCode.valueOf(status)).contentType(MediaType.APPLICATION_JSON).body(body));
     }
 
