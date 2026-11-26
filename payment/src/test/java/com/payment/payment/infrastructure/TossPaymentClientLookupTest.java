@@ -11,6 +11,7 @@ import java.net.SocketTimeoutException;
 import java.util.Optional;
 
 import com.payment.payment.domain.PaymentGatewayException;
+import com.payment.payment.domain.PaymentLookupRejectedException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgPaymentLookup;
 import com.payment.payment.domain.PgPaymentStatus;
@@ -87,21 +88,32 @@ class TossPaymentClientLookupTest {
     }
 
     @Test
-    @DisplayName("404 NOT_FOUND(존재하지 않는 정보)는 결제가 없다고 단정할 수 없어 조회 실패다")
-    void genericNotFoundIsLookupFailure() {
+    @DisplayName("404 NOT_FOUND(존재하지 않는 정보)는 결제가 없다고 단정할 수 없고, 다시 보내도 같은 응답이므로 일시 실패도 아니다 → 조회 거절(PaymentLookupRejectedException)")
+    void genericNotFoundIsRejected() {
         // given
         respondWith(404, error("NOT_FOUND"));
 
         // when // then
-        assertThatThrownBy(() -> client.lookup(PAYMENT_KEY)).isInstanceOf(PaymentTimeoutException.class);
+        assertThatThrownBy(() -> client.lookup(PAYMENT_KEY)).isInstanceOf(PaymentLookupRejectedException.class);
+    }
+
+    @Test
+    @DisplayName("예상 밖 4xx(400)는 우리 요청 문제라 조회 거절(PaymentLookupRejectedException)이고 빈 값이 아니다")
+    void unexpected4xxIsRejected() {
+        // given
+        respondWith(400, error("SOMETHING_UNEXPECTED"));
+
+        // when // then
+        assertThatThrownBy(() -> client.lookup(PAYMENT_KEY)).isInstanceOf(PaymentLookupRejectedException.class);
     }
 
     @ParameterizedTest(name = "{0} {1}")
     @CsvSource({
             "500, FAILED_PAYMENT_INTERNAL_SYSTEM_PROCESSING",
             "403, FORBIDDEN_CONSECUTIVE_REQUEST",
-            "400, SOMETHING_UNEXPECTED"})
-    @DisplayName("5xx·반복 요청 차단·예상 밖 4xx는 조회 실패(PaymentTimeoutException)이고 빈 값이 아니다")
+            "400, PROVIDER_ERROR",
+            "429, TOO_MANY_REQUESTS"})
+    @DisplayName("5xx·반복 요청 차단·일시 오류·429는 다시 하면 될 수 있는 조회 실패(PaymentTimeoutException)이고 빈 값이 아니다")
     void otherErrorsAreLookupFailure(int status, String code) {
         // given
         respondWith(status, error(code));

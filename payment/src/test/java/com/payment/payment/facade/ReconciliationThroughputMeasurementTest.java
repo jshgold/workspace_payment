@@ -76,6 +76,8 @@ class ReconciliationThroughputMeasurementTest extends IntegrationTestSupport {
 
     private List<Order> orders;
 
+    private Product product;
+
     @BeforeEach
     void setUp() {
         fakePaymentClient.reset();
@@ -94,64 +96,76 @@ class ReconciliationThroughputMeasurementTest extends IntegrationTestSupport {
     @org.junit.jupiter.api.Order(0)
     @DisplayName("T0 — PAYMENT_UNKNOWN 6분 경과 300건, PG 조회 DONE(금액 일치), PG 지연 0ms, 속도 제한 초당 1000(사실상 없음), 회차 상한 50초 → 건당 DB 처리 비용")
     void t0_dbCostOnly() {
-        measure("T0", Duration.ZERO, 1000);
+        measure("T0", Duration.ZERO, 1000, PgPaymentStatus.DONE, OrderStatus.PAID);
     }
 
     @Test
     @org.junit.jupiter.api.Order(1)
     @DisplayName("T1 — PAYMENT_UNKNOWN 6분 경과 300건, PG 조회 DONE(금액 일치), PG 지연 0ms, 초당 5, 회차 상한 50초 → 속도 제한이 처리량 상한을 정하는지")
     void t1_rateLimitBound() {
-        measure("T1", Duration.ZERO, 5);
+        measure("T1", Duration.ZERO, 5, PgPaymentStatus.DONE, OrderStatus.PAID);
     }
 
     @Test
     @org.junit.jupiter.api.Order(2)
     @DisplayName("T2 — PAYMENT_UNKNOWN 6분 경과 300건, PG 조회 DONE(금액 일치), PG 지연 100ms, 초당 5, 회차 상한 50초 → 지연 < 호출 간격(200ms)")
     void t2_latencyBelowInterval() {
-        measure("T2", Duration.ofMillis(100), 5);
+        measure("T2", Duration.ofMillis(100), 5, PgPaymentStatus.DONE, OrderStatus.PAID);
     }
 
     @Test
     @org.junit.jupiter.api.Order(3)
     @DisplayName("T3 — PAYMENT_UNKNOWN 6분 경과 300건, PG 조회 DONE(금액 일치), PG 지연 500ms, 초당 5, 회차 상한 50초 → 지연 > 호출 간격(200ms)")
     void t3_latencyAboveInterval() {
-        measure("T3", Duration.ofMillis(500), 5);
+        measure("T3", Duration.ofMillis(500), 5, PgPaymentStatus.DONE, OrderStatus.PAID);
     }
 
-    private void measure(String code, Duration pgDelay, int callsPerSecond) {
+    @Test
+    @org.junit.jupiter.api.Order(4)
+    @DisplayName("F0 — 상품 1 × 재고 400, PAYMENT_UNKNOWN 6분 경과 300건(수량 1, 재고 100 남음), PG 조회 ABORTED, PG 지연 0ms, 속도 제한 초당 1000(사실상 없음), 회차 상한 50초 → 300건 FAILED, 재고 400으로 복구, 재고 복구(상품 행 락)가 붙은 건당 DB 처리 비용")
+    void f0_dbCostWithStockRestore() {
+        measure("F0", Duration.ZERO, 1000, PgPaymentStatus.ABORTED, OrderStatus.FAILED);
+    }
+
+    private void measure(String code, Duration pgDelay, int callsPerSecond,
+                         PgPaymentStatus lookupStatus, OrderStatus expectedStatus) {
         // given
         PaymentReconciliationFacade facade = new PaymentReconciliationFacade(reconciliationStateService,
                 fakePaymentClient, new ReconciliationProperties(
                         Duration.ofMinutes(5), Duration.ofMinutes(1), 500, MAX_ROUND, 3, callsPerSecond));
-        fakePaymentClient.willLookup(PgPaymentStatus.DONE, PRICE * QUANTITY);
+        fakePaymentClient.willLookup(lookupStatus, PRICE * QUANTITY);
+        int stockBefore = productRepository.findById(product.getId()).orElseThrow().getStock();
         fakePaymentClient.delay(pgDelay); // 대상을 다 만든 뒤에 건다 (승인에도 적용되므로)
 
         // when
         ReconciliationRoundResult result = facade.reconcilePayments();
 
         // then
-        long paid = orders.stream()
+        long confirmed = orders.stream()
                 .map(o -> orderRepository.findById(o.getId()).orElseThrow().getStatus())
-                .filter(s -> s == OrderStatus.PAID)
+                .filter(s -> s == expectedStatus)
                 .count();
+        int stockAfter = productRepository.findById(product.getId()).orElseThrow().getStock();
         double perTargetMs = result.targets() == 0 ? 0 : (double) result.elapsedMs() / result.targets();
         log.info("[측정 {}] PG 지연={}ms, 초당={}, 대상={}, 확정={}, PG 실패={}, 반영 오류={}, 남은 대상 있음={}, "
-                        + "소요={}ms, 건당 평균={}ms, PG 조회={}번, PAID={}건",
+                        + "소요={}ms, 건당 평균={}ms, PG 조회={}번, {}={}건, 재고 {} → {}",
                 code, pgDelay.toMillis(), callsPerSecond, result.targets(), result.applied(), result.pgFailures(),
                 result.errors(), result.hasMore(), result.elapsedMs(), String.format("%.1f", perTargetMs),
-                fakePaymentClient.lookupCallCount(), paid);
+                fakePaymentClient.lookupCallCount(), expectedStatus, confirmed, stockBefore, stockAfter);
 
         assertThat(result.errors()).as("반영 오류 없음").isZero();
         assertThat(result.pgFailures()).as("PG 조회 실패 없음").isZero();
         assertThat(result.applied()).as("처리를 시도한 대상은 모두 확정").isEqualTo(result.targets());
-        assertThat(paid).as("확정 건수 = PAID 주문 수").isEqualTo(result.applied());
+        assertThat(confirmed).as("확정 건수 = %s 주문 수", expectedStatus).isEqualTo(result.applied());
+        int restored = expectedStatus == OrderStatus.FAILED ? result.applied() * QUANTITY : 0;
+        assertThat(stockAfter).as("FAILED면 확정 건수만큼 재고 복구, PAID면 그대로").isEqualTo(stockBefore + restored);
         assertThat(result.hasMore()).as("다 처리하지 못했으면 남은 대상 있음으로 보고")
                 .isEqualTo(result.targets() < TARGET_COUNT);
     }
 
     /** 실제 승인 흐름에 승인 타임아웃을 걸어 PAYMENT_UNKNOWN을 만들고, 상태가 된 시각을 minutesAgo분 전으로 옮긴다. */
     private List<Order> createPaymentUnknownOrders(int count, int minutesAgo) {
-        Product product = productRepository.save(Product.create("키보드", PRICE, count * QUANTITY + 100));
+        product = productRepository.save(Product.create("키보드", PRICE, count * QUANTITY + 100));
         PaymentFacade approveFacade = new PaymentFacade(approveStateService, fakePaymentClient);
         fakePaymentClient.willTimeout();
         List<Order> created = new ArrayList<>(count);

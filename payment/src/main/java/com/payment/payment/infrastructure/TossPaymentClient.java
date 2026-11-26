@@ -17,6 +17,7 @@ import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
+import com.payment.payment.domain.PaymentLookupRejectedException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
@@ -75,6 +76,9 @@ public class TossPaymentClient implements PaymentClient {
 
     /** 4xx지만 이미 승인됐거나 승인 중일 수 있는 코드. 거절로 확정하면 안 된다. */
     private static final Set<String> UNKNOWN_RESULT_CODES = Set.of("ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING");
+
+    /** 4xx지만 다시 조회하면 될 수 있는 조회 응답 코드. 일시 오류, 반복 요청 차단. (429는 코드와 상관없이 같다) */
+    private static final Set<String> LOOKUP_TRANSIENT_CODES = Set.of("PROVIDER_ERROR", "FORBIDDEN_CONSECUTIVE_REQUEST");
 
     /** 연결 실패를 {@link PaymentGatewayException}으로 알릴 때 쓰는 우리 쪽 코드. (PG가 준 코드가 아니다) */
     static final String CONNECTION_FAILED = "CONNECTION_FAILED";
@@ -158,10 +162,13 @@ public class TossPaymentClient implements PaymentClient {
      * 2xx + 알려진 status + totalAmount   → 조회 결과
      * 404 NOT_FOUND_PAYMENT               → 빈 값 (PG가 그 결제를 모름. 판단은 대사가 한다)
      * 401, 키 오류, 연결 실패               → PaymentGatewayException (조회 실패, 다음 회차)
-     * 그 밖의 응답, 타임아웃, 이상한 본문     → PaymentTimeoutException (조회 실패, 다음 회차)
+     * 5xx, 429, 일시 오류·반복 요청 차단,
+     * 타임아웃, 이상한 본문                  → PaymentTimeoutException (조회 실패, 다음 회차)
+     * 그 밖의 4xx (일반 404 NOT_FOUND, 400 등) → PaymentLookupRejectedException (조회 거절. 사람이 본다)
      * </pre>
-     * {@code NOT_FOUND}(404, "존재하지 않는 정보")는 결제가 없다는 뜻으로 단정할 수 없어 조회 실패로 본다.
-     * 조회 실패를 "없음"으로 잘못 분류하면 승인된 결제를 FAILED로 확정하게 된다.
+     * {@code NOT_FOUND}(404, "존재하지 않는 정보")는 결제가 없다는 뜻으로 단정할 수 없어 "없음"으로 보지 않는다.
+     * "없음"으로 잘못 분류하면 승인된 결제를 FAILED로 확정하게 된다. 그렇다고 일시 실패도 아니다. 같은 요청엔 같은 응답이
+     * 오므로, 일시 실패로 세면 이런 건 몇 개가 매 회차 연속 실패를 채워 대사 전체를 멈춘다. (2026-11-26 변경)
      */
     @Override
     public Optional<PgPaymentLookup> lookup(String paymentKey) {
@@ -208,6 +215,10 @@ public class TossPaymentClient implements PaymentClient {
         log.warn("토스 결제 조회 실패 응답. paymentKey={}, status={}, code={}", paymentKey, status, code);
         if (status == 401 || (code != null && CONFIG_ERROR_CODES.contains(code))) {
             throw new PaymentGatewayException(code == null ? "HTTP " + status : code);
+        }
+        if (response.getStatusCode().is4xxClientError() && status != 429
+                && (code == null || !LOOKUP_TRANSIENT_CODES.contains(code))) {
+            throw new PaymentLookupRejectedException(status, code);
         }
         throw new PaymentTimeoutException();
     }

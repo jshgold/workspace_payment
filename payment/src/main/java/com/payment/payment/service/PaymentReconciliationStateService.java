@@ -174,6 +174,29 @@ public class PaymentReconciliationStateService {
         return true;
     }
 
+    /** PG 조회가 NOT_FOUND_PAYMENT다. 주문 CANCEL_REVIEW, 취소 시도 UNKNOWN. 결제·재고는 그대로. 사람이 확인한다. */
+    @Transactional
+    public boolean markCancelReview(CancelReconcileTarget target) {
+        Order order = findOrderForUpdate(target.orderId());
+        PaymentCancel attempt = findAttempt(target.cancelId());
+        if (!order.isAwaitingCancelReconciliation() || !attempt.isAwaitingReconciliation()) {
+            return skipped("취소 대사", order, attempt.getStatus());
+        }
+        attempt.keepUnknownForReview();
+        order.markCancelReviewByReconciliation();
+        return true;
+    }
+
+    /**
+     * 사람이 원인을 고친 뒤 호출한다. 주문 CANCEL_REVIEW → CANCEL_UNKNOWN. 확정은 다음 대사의 PG 조회로 한다.
+     * {@code updated_at}이 지금으로 바뀌므로 대사 기준 시간이 지난 뒤 다시 조회된다.
+     */
+    @Transactional
+    public void reopenCancelReview(Long orderId) {
+        findOrderForUpdate(orderId).reopenCancelReview();
+        log.warn("[취소 대사] 취소 확인 필요 건을 다시 대사 대상으로 되돌렸다. orderId={}", orderId);
+    }
+
     private boolean skipped(String job, Order order, Enum<?> attemptStatus) {
         log.info("[{}] 고른 뒤 다른 경로가 먼저 확정했다. 건너뛴다. orderId={}, 주문 상태={}, 시도 상태={}",
                 job, order.getId(), order.getStatus(), attemptStatus);

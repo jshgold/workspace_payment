@@ -50,7 +50,7 @@ class PaymentCancelReplayer {
             return replay(existing.get(), command);
         }
         throw new BusinessException(switch (order.getStatus()) {
-            case CANCELING, CANCEL_UNKNOWN -> ErrorCode.PAYMENT_IN_PROGRESS;
+            case CANCELING, CANCEL_UNKNOWN, CANCEL_REVIEW -> ErrorCode.PAYMENT_IN_PROGRESS;
             case CANCELED -> ErrorCode.ORDER_ALREADY_CANCELED;
             default -> ErrorCode.ORDER_NOT_CANCELABLE;
         });

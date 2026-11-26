@@ -8,6 +8,7 @@ import java.util.function.Function;
 
 import com.payment.common.exception.ErrorCode;
 import com.payment.payment.domain.PaymentClient;
+import com.payment.payment.domain.PaymentLookupRejectedException;
 import com.payment.payment.domain.PgPaymentLookup;
 import com.payment.payment.dto.ReconciliationRoundResult;
 import com.payment.payment.service.CancelReconcileTarget;
@@ -68,6 +69,7 @@ public class PaymentReconciliationFacade {
      * ABORTED, EXPIRED, READY, IN_PROGRESS → FAILED + 재고 복구 (승인 요청을 다시 보내지 않으므로 승인될 길이 없다)
      * NOT_FOUND_PAYMENT                    → FAILED + 재고 복구 + log.error (결제 쪽 장애)
      * 조회 실패                            → 바꾸지 않음, 다음 회차
+     * 조회 거절 (일반 404, 400 등)           → 바꾸지 않음 + log.error, 연속 실패에 세지 않음
      * 그 밖의 상태 (가상계좌, 부분 취소)     → 바꾸지 않음 + log.error (이 서비스에서 생길 수 없음)
      * </pre>
      */
@@ -75,6 +77,8 @@ public class PaymentReconciliationFacade {
         Optional<PgPaymentLookup> found;
         try {
             found = paymentClient.lookup(target.paymentKey());
+        } catch (PaymentLookupRejectedException e) {
+            return lookupRejected(PAYMENT_JOB, target.orderId(), target.paymentKey(), e);
         } catch (RuntimeException e) {
             log.warn("[{}] PG 조회 실패. 다음 회차에 다시 조회한다. orderId={}, cause={}",
                     PAYMENT_JOB, target.orderId(), e.getClass().getSimpleName());
@@ -140,7 +144,7 @@ public class PaymentReconciliationFacade {
      * <pre>
      * CANCELED           → 취소 확정: CANCELED + 재고 복구
      * DONE               → 취소되지 않음: PAID로 돌아감 (취소 시도는 FAILED로 남음)
-     * NOT_FOUND_PAYMENT  → 바꾸지 않음 + log.error (이미 결제된 건이 없다는 것은 시스템 장애. 사람이 확인한다)
+     * NOT_FOUND_PAYMENT  → CANCEL_REVIEW + log.error (이미 결제된 건이 없다는 것은 시스템 장애. 대사 대상에서 빼고 사람이 확인한다)
      * 조회 실패           → 바꾸지 않음, 다음 회차
      * 그 밖의 상태         → 바꾸지 않음 + log.error
      * </pre>
@@ -149,6 +153,8 @@ public class PaymentReconciliationFacade {
         Optional<PgPaymentLookup> found;
         try {
             found = paymentClient.lookup(target.paymentKey());
+        } catch (PaymentLookupRejectedException e) {
+            return lookupRejected(CANCEL_JOB, target.orderId(), target.paymentKey(), e);
         } catch (RuntimeException e) {
             log.warn("[{}] PG 조회 실패. 다음 회차에 다시 조회한다. orderId={}, cause={}",
                     CANCEL_JOB, target.orderId(), e.getClass().getSimpleName());
@@ -156,9 +162,9 @@ public class PaymentReconciliationFacade {
         }
 
         if (found.isEmpty()) {
-            log.error("[{}] 이미 결제된 건이 PG에 없다(NOT_FOUND_PAYMENT). 시스템 장애로 보고 바꾸지 않는다. 확인이 필요하다. orderId={}, paymentKey={}",
+            log.error("[{}] 이미 결제된 건이 PG에 없다(NOT_FOUND_PAYMENT). 시스템 장애로 보고 CANCEL_REVIEW로 빼 둔다. 확인이 필요하다. orderId={}, paymentKey={}",
                     CANCEL_JOB, target.orderId(), target.paymentKey());
-            return Outcome.SKIPPED;
+            return apply(() -> stateService.markCancelReview(target), target.orderId());
         }
 
         PgPaymentLookup lookup = found.get();
@@ -171,6 +177,16 @@ public class PaymentReconciliationFacade {
                 yield Outcome.SKIPPED;
             }
         };
+    }
+
+    /**
+     * 조회가 우리 요청을 거절했다 (일반 404, 400 등). 정상 흐름에서는 생기지 않으므로 사람이 본다.
+     * 다시 보내도 같은 응답이라 일시 실패로 세지 않는다. 세면 이런 건 몇 개가 매 회차 회차를 멈춘다. (intent 8절 대사 구현 세부 ⑤)
+     */
+    private Outcome lookupRejected(String job, Long orderId, String paymentKey, PaymentLookupRejectedException e) {
+        log.error("[{}] PG 조회가 요청을 거절했다. 바꾸지 않고 건너뛴다. 확인이 필요하다. orderId={}, paymentKey={}, cause={}",
+                job, orderId, paymentKey, e.getMessage());
+        return Outcome.SKIPPED;
     }
 
     // ---- 회차 ----

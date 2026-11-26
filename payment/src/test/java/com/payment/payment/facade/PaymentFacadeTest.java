@@ -178,8 +178,8 @@ class PaymentFacadeTest {
         }
 
         @Test
-        @DisplayName("승인 후 결과 반영이 실패하면 PG 승인을 취소하고 실패를 확정한다")
-        void completeFailsThenCompensate() {
+        @DisplayName("PG가 서버 금액 그대로 승인했는데 결과 반영이 실패하면 보상 취소하지 않고 결과 모름(failure_code 없음, 승인 금액 기록)으로 남긴다 — 대사가 PAID로 확정")
+        void completeFailsThenMarksUnknownWithoutCancel() {
             // given
             startPayingProceeds();
             given(paymentClient.approve(any())).willReturn(APPROVED);
@@ -187,8 +187,9 @@ class PaymentFacadeTest {
 
             // when // then
             assertThatThrownBy(() -> approve()).isInstanceOf(IllegalStateException.class);
-            verify(paymentClient).cancel(PAYMENT_KEY, "결제 반영 실패");
-            verify(paymentStateService).fail(ORDER_ID, ErrorCode.INTERNAL_SERVER_ERROR, AMOUNT);
+            verify(paymentClient, never()).cancel(anyString(), anyString());
+            verify(paymentStateService).markUnknown(ORDER_ID, null, AMOUNT);
+            verify(paymentStateService, never()).fail(any(), any(), any());
         }
 
         @Test

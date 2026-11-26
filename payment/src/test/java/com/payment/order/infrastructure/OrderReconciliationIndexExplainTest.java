@@ -97,6 +97,7 @@ class OrderReconciliationIndexExplainTest {
         Flyway.configure()
                 .dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
                 .locations("classpath:db/migration")
+                .target("10") // V11이 측정 대상 인덱스를 만든다. "인덱스 없음"부터 비교하려고 그 전까지만 올린다
                 .load()
                 .migrate();
         seed();

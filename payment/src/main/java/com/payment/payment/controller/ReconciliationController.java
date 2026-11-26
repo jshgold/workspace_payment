@@ -2,9 +2,11 @@ package com.payment.payment.controller;
 
 import com.payment.payment.dto.ReconciliationRoundResult;
 import com.payment.payment.facade.PaymentReconciliationFacade;
+import com.payment.payment.service.PaymentReconciliationStateService;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class ReconciliationController {
 
     private final PaymentReconciliationFacade reconciliationFacade;
+    private final PaymentReconciliationStateService reconciliationStateService;
 
     @PostMapping("/payments")
     public ResponseEntity<ReconciliationRoundResult> reconcilePayments() {
@@ -28,5 +31,12 @@ public class ReconciliationController {
     @PostMapping("/cancels")
     public ResponseEntity<ReconciliationRoundResult> reconcileCancels() {
         return ResponseEntity.ok(reconciliationFacade.reconcileCancels());
+    }
+
+    /** 취소 확인 필요(CANCEL_REVIEW) 건을 사람이 원인을 고친 뒤 다시 대사 대상(CANCEL_UNKNOWN)으로 되돌린다. CANCEL_REVIEW가 아니면 409. */
+    @PostMapping("/cancel-reviews/{orderId}/reopen")
+    public ResponseEntity<Void> reopenCancelReview(@PathVariable Long orderId) {
+        reconciliationStateService.reopenCancelReview(orderId);
+        return ResponseEntity.noContent().build();
     }
 }

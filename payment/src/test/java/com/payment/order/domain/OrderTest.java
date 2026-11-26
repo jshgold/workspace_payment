@@ -365,4 +365,48 @@ class OrderTest {
         assertThatThrownBy(paid::confirmCanceledByReconciliation).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(canceling::confirmCancelNotAppliedByReconciliation).isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    @DisplayName("취소 대사 조회가 NOT_FOUND_PAYMENT면 CANCELING·CANCEL_UNKNOWN 모두 CANCEL_REVIEW가 되고, 대사 대상이 아니며, 취소를 다시 시작하거나 대사로 확정할 수 없다")
+    void cancelReviewEntry() {
+        // given
+        Order canceling = paidOrder();
+        canceling.startCanceling();
+        Order cancelUnknown = paidOrder();
+        cancelUnknown.startCanceling();
+        cancelUnknown.markCancelUnknown();
+        Order paid = paidOrder();
+
+        // when
+        canceling.markCancelReviewByReconciliation();
+        cancelUnknown.markCancelReviewByReconciliation();
+
+        // then
+        assertThat(canceling.getStatus()).isEqualTo(OrderStatus.CANCEL_REVIEW);
+        assertThat(cancelUnknown.getStatus()).isEqualTo(OrderStatus.CANCEL_REVIEW);
+        assertThat(canceling.isAwaitingCancelReconciliation()).isFalse();
+        assertThatThrownBy(canceling::startCanceling).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(canceling::confirmCanceledByReconciliation).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(paid::markCancelReviewByReconciliation).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("CANCEL_REVIEW는 사람이 확인한 뒤 CANCEL_UNKNOWN으로만 되돌릴 수 있고, 그 밖의 상태는 되돌릴 수 없다")
+    void cancelReviewReopen() {
+        // given
+        Order review = paidOrder();
+        review.startCanceling();
+        review.markCancelReviewByReconciliation();
+        Order cancelUnknown = paidOrder();
+        cancelUnknown.startCanceling();
+        cancelUnknown.markCancelUnknown();
+
+        // when
+        review.reopenCancelReview();
+
+        // then
+        assertThat(review.getStatus()).isEqualTo(OrderStatus.CANCEL_UNKNOWN);
+        assertThat(review.isAwaitingCancelReconciliation()).isTrue();
+        assertThatThrownBy(cancelUnknown::reopenCancelReview).isInstanceOf(IllegalStateException.class);
+    }
 }

@@ -143,6 +143,12 @@ public class PaymentCancel {
         this.failureCode = ErrorCode.PAYMENT_CANCEL_NOT_APPLIED.name();
     }
 
+    /** 대사: PG 조회가 NOT_FOUND_PAYMENT라 사람이 확인한다. 결과를 모르는 것은 그대로이므로 {@code REQUESTED → UNKNOWN}, UNKNOWN이면 그대로. (4-4) */
+    public void keepUnknownForReview() {
+        assertAwaitingReconciliation();
+        this.status = PaymentCancelStatus.UNKNOWN;
+    }
+
     private void assertAwaitingReconciliation() {
         if (!isAwaitingReconciliation()) {
             throw new IllegalStateException("대사로 확정할 수 없는 취소 시도 상태입니다. 현재 상태: " + this.status);

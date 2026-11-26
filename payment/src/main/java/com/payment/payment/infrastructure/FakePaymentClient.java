@@ -11,6 +11,7 @@ import com.payment.payment.domain.PaymentCancelDeclinedException;
 import com.payment.payment.domain.PaymentClient;
 import com.payment.payment.domain.PaymentDeclinedException;
 import com.payment.payment.domain.PaymentGatewayException;
+import com.payment.payment.domain.PaymentLookupRejectedException;
 import com.payment.payment.domain.PaymentTimeoutException;
 import com.payment.payment.domain.PgApproveRequest;
 import com.payment.payment.domain.PgApproveResult;
@@ -49,7 +50,7 @@ public class FakePaymentClient implements PaymentClient {
 
     private enum CancelScenario { CANCEL, DECLINE, TIMEOUT, CONNECTION_FAILED, ALREADY_CANCELED }
 
-    private enum LookupScenario { NOT_SET, FOUND, NOT_FOUND, TIMEOUT }
+    private enum LookupScenario { NOT_SET, FOUND, NOT_FOUND, TIMEOUT, REJECTED }
 
     private final Duration initialDelay;
 
@@ -145,6 +146,11 @@ public class FakePaymentClient implements PaymentClient {
     }
 
     /** 조회 응답을 받지 못한다. */
+    /** 조회가 우리 요청을 거절한다 (일반 404 등). 같은 요청엔 계속 같은 응답 */
+    public void willRejectLookup() {
+        this.lookupScenario = LookupScenario.REJECTED;
+    }
+
     public void willTimeoutLookup() {
         this.lookupScenario = LookupScenario.TIMEOUT;
     }
@@ -216,6 +222,7 @@ public class FakePaymentClient implements PaymentClient {
             case FOUND -> Optional.of(lookupResult);
             case NOT_FOUND -> Optional.empty();
             case TIMEOUT -> throw new PaymentTimeoutException();
+            case REJECTED -> throw new PaymentLookupRejectedException(404, "NOT_FOUND");
             case NOT_SET -> throw new IllegalStateException("가짜 PG 조회 시나리오가 정해지지 않았습니다. paymentKey=" + paymentKey);
         };
     }

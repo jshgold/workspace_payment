@@ -28,6 +28,7 @@
   - `EXPIRED`(만료. 결제를 시작하지 않은 채 버려진 주문)
   - `CANCELING`(취소 진행 중. PG 취소 호출이 나가 있고 응답을 기다리는 중)
   - `CANCEL_UNKNOWN`(취소 결과 모름. 타임아웃·5xx로 응답을 놓쳐 대사를 기다리는 중)
+  - `CANCEL_REVIEW`(취소 확인 필요. 취소 대사 조회에서 토스가 `NOT_FOUND_PAYMENT`를 줬다. 이미 결제된 건이 조회되지 않는 장애라 대사 대상에서 빼고 사람이 확인한다)
   - `CANCELED`(취소 완료)
 - **Payment:** Order에 대한 **결제 시도 기록**. 승인 결과가 아니라 시도를 기록한다.
   - PG를 호출하기 **전에** `REQUESTED`로 생성한다. (멱등키, `paymentKey`, 금액 저장)
@@ -42,7 +43,7 @@
 - **PaymentCancel:** 사용자 결제 취소 요청의 **취소 시도 기록**.
   - PG 취소를 호출하기 **전에** `REQUESTED`로 생성한다. (멱등키, 취소 사유 저장)
   - Order와 1:N이다. PG가 취소를 거절하면 주문이 `PAID`로 돌아가 새 키로 다시 취소할 수 있기 때문이다. 진행 중인 시도가 하나뿐인 것은 주문 상태 선점(`PAID → CANCELING`)이 보장한다.
-  - 보상 취소(승인 후 반영 실패)는 기록하지 않는다. 결과는 Payment(`FAILED` 또는 `UNKNOWN` + `PAYMENT_CANCEL_FAILED`)에 남는다.
+  - 보상 취소(승인 금액 불일치)는 기록하지 않는다. 결과는 Payment(`FAILED` 또는 `UNKNOWN` + `PAYMENT_CANCEL_FAILED`)에 남는다.
   - 주문 상태가 바뀌지 않는 거절(이미 `CANCELED`, 취소할 수 없는 상태)은 시도가 아니므로 기록하지 않는다.
 - **PaymentCancelStatus:**
   - `REQUESTED`(PG 취소 요청 중)
@@ -80,8 +81,9 @@
 | 만료 | `PENDING → EXPIRED` (N분 동안 결제를 시작하지 않음) |
 | 취소 시작 | `PAID → CANCELING` |
 | 취소 결과 | `CANCELING → CANCELED` / `CANCELING → PAID`(PG가 명확히 거절) / `CANCELING → CANCEL_UNKNOWN` |
-| 취소 결과 모름 대사 | `CANCEL_UNKNOWN → CANCELED` / `CANCEL_UNKNOWN → PAID` |
-| 서버 중단 추정 대사 | `CANCELING`(N분 경과) `→ CANCELED` / `→ PAID` |
+| 취소 결과 모름 대사 | `CANCEL_UNKNOWN → CANCELED` / `CANCEL_UNKNOWN → PAID` / `CANCEL_UNKNOWN → CANCEL_REVIEW`(조회 `NOT_FOUND_PAYMENT`) |
+| 서버 중단 추정 대사 | `CANCELING`(N분 경과) `→ CANCELED` / `→ PAID` / `→ CANCEL_REVIEW`(조회 `NOT_FOUND_PAYMENT`) |
+| 취소 확인 후 재대사 | `CANCEL_REVIEW → CANCEL_UNKNOWN` (사람이 원인을 고친 뒤 수동 API. 다음 대사가 다시 조회해 확정) |
 
 - `FAILED`, `CANCELED`, `EXPIRED`는 최종 상태다. 여기서 다른 상태로 가지 않는다.
 - `PAYING → PENDING`처럼 **결제 시도 이전 상태로 되돌리는 간선은 없다.**
@@ -103,9 +105,10 @@
 | 서버 중단 추정 대사 | `REQUESTED`(N분 경과) `→ APPROVED` / `→ FAILED` |
 | 취소 | `APPROVED → CANCELED` |
 
-- PG가 승인했지만 반영 단계에서 보상 취소한 경우(금액 불일치, DB 반영 실패)는 `FAILED` + `failure_code`로 남긴다.
+- PG가 승인했지만 금액이 서버 금액과 달라 보상 취소한 경우는 `FAILED` + `failure_code`(`PAYMENT_AMOUNT_MISMATCH`)로 남긴다.
+- PG가 서버 금액 그대로 승인했는데 우리 DB 반영(`complete`)만 실패하면 **보상 취소하지 않는다.** 고객이 동의했고 돈도 나간 정상 결제이므로 결과 모름(`PAYMENT_UNKNOWN` / `UNKNOWN`, `failure_code` 없음, `approved_amount` 기록)으로 남기고 대사가 `PAID`로 확정한다. 그 기록마저 실패하면 `PAYING`에 남아 오래된 `PAYING`으로 대사된다. (2026-11-26 변경: 처음에는 보상 취소였다)
 - 보상 취소 자체가 실패하면 돈이 묶였는지 모르므로 `UNKNOWN`(주문 `PAYMENT_UNKNOWN`) + `failure_code=PAYMENT_CANCEL_FAILED`로 남겨 대사 대상으로 만든다. PG가 승인한 금액은 `approved_amount`에 남긴다. 대사는 승인 여부뿐 아니라 금액까지 비교해야 한다.
-  - 대사 처리 (4-4): PG 조회 `CANCELED`면 `FAILED` + 재고 복구. `DONE`이고 금액이 서버 금액과 같으면(반영 실패로 보상하려던 건) `PAID`로 확정, 다르면(금액 불일치) 다시 취소하고 성공하면 `FAILED` + 재고 복구.
+  - 대사 처리 (4-4): PG 조회 `CANCELED`면 `FAILED` + 재고 복구. `DONE`이고 금액이 서버 금액과 같으면(2026-11-26 이전에 반영 실패로 보상하려던 건) `PAID`로 확정, 다르면(금액 불일치) 다시 취소하고 성공하면 `FAILED` + 재고 복구.
 
 | PaymentCancel 흐름 | 전이 | 함께 바뀌는 것 |
 |---|---|---|
@@ -115,10 +118,12 @@
 | 취소 결과: 모름 | `REQUESTED → UNKNOWN` | 주문 `CANCELING → CANCEL_UNKNOWN` |
 | 결과 모름 대사 (4-4) | `UNKNOWN → COMPLETED` / `UNKNOWN → FAILED` | 주문 `CANCEL_UNKNOWN → CANCELED`(재고 복구) / `→ PAID` |
 | 서버 중단 추정 대사 (4-4) | `REQUESTED`(N분 경과) `→ COMPLETED` / `→ FAILED` | 주문 `CANCELING → CANCELED`(재고 복구) / `→ PAID` |
+| 조회 `NOT_FOUND_PAYMENT` (4-4) | `REQUESTED → UNKNOWN` / `UNKNOWN` 그대로 | 주문 `CANCELING`·`CANCEL_UNKNOWN → CANCEL_REVIEW`. 결제 `APPROVED`, 재고 그대로 |
+| 취소 확인 후 재대사 (4-4) | `UNKNOWN` 그대로 | 주문 `CANCEL_REVIEW → CANCEL_UNKNOWN` (수동 API) |
 
 - PG 취소 응답이 `ALREADY_CANCELED_PAYMENT` 또는 `ALREADY_REFUND_PAYMENT`이면 성공으로 본다. 첫 시도에서 이 응답이 오면 `log.warn`을 남긴다.
 - 같은 키 재요청: 다른 주문·사유면 `IDEMPOTENCY_KEY_REUSED`(422), `COMPLETED`면 첫 결과, `FAILED`면 같은 실패, `REQUESTED`/`UNKNOWN`이면 409 처리 중.
-- 새 키 요청: 주문이 `PAID`면 새 시도, `CANCELING`/`CANCEL_UNKNOWN`이면 409 처리 중, `CANCELED`면 409 이미 취소됨, 그 밖의 상태면 409 취소할 수 없음. (기록하지 않음)
+- 새 키 요청: 주문이 `PAID`면 새 시도, `CANCELING`/`CANCEL_UNKNOWN`/`CANCEL_REVIEW`이면 409 처리 중, `CANCELED`면 409 이미 취소됨, 그 밖의 상태면 409 취소할 수 없음. (기록하지 않음)
 - `failure_code`에는 `ErrorCode` 이름을 저장한다. 같은 키의 재요청에 같은 에러를 돌려줄 때 그대로 쓴다.
 - 취소 진행·결과 모름은 Order 상태(`CANCELING`, `CANCEL_UNKNOWN`)로 관리하고, Payment는 취소가 확정될 때 `CANCELED`가 된다.
 
@@ -167,10 +172,13 @@ phase 파일의 "시작 전에 정할 것"이나 설계 변경으로 정한 내�
 | 실제 PG 확인 시점 | 4-3~4-5는 가짜 PG로 개발하고, 실제 토스 호출 확인은 4-6 수동 E2E에 모아서 한다 | (사용자 작성) 이전 테스트 중 토스에서 요청이 차단된 적이 있다 | phase-04 4-3 (2026-11-25) |
 | 대사의 역할 | **조회만 한다.** PG 결제 조회로 이미 일어난 결과를 확인해 기록을 맞추고, 승인 요청은 다시 보내지 않는다. 결제 주체는 고객이고 결제 의사는 요청한 그 순간에만 유효하므로, 서버가 나중에 대신 승인하면 고객이 동의하지 않은 결제가 된다. 대사가 PG에 쓰기 요청을 보내는 경우는 돈을 돌려주는 방향(보상 취소 실패 건의 재취소)뿐이다. 4-5의 PG 재시도도 고객이 기다리는 그 요청 안으로 한정한다 | (사용자 작성) | phase-04 4-4 (2026-11-25) |
 | 승인 대사 분류 (`PAYMENT_UNKNOWN`, 오래된 `PAYING`) | 조회 결과로 나눈다: `DONE` + 금액 일치 → `PAID`(재고 그대로) / `ABORTED`·`EXPIRED`·`READY`·`IN_PROGRESS` → `FAILED` + 재고 복구 (승인 요청을 다시 보내지 않으므로 승인될 길이 없다. 기다리면 재고와 "결제 확인 중" 화면만 묶인다) / `NOT_FOUND_PAYMENT` → 결제 쪽 장애로 보고 `FAILED` + 재고 복구 + `log.error` / 조회 실패(타임아웃·5xx·401) → 바꾸지 않고 다음 회차에 다시 조회. `DONE`인데 금액이 다르면 `PAID`로 확정하지 않고 다시 취소한다. 보상 취소 실패 건(`PAYMENT_CANCEL_FAILED`)도 같은 기준이다: 금액이 같으면(반영 실패) `PAID`, 다르면(금액 불일치) 다시 취소, 조회가 `CANCELED`면 `FAILED` | (사용자 작성) | phase-04 4-4 (2026-11-25) |
-| 취소 대사·보상 취소 실패 건의 `NOT_FOUND_PAYMENT` | 상태를 바꾸지 않고 `log.error`만 남긴다. 이미 결제된 건이 조회되지 않는 것은 결제 결과가 아니라 시스템 장애(우리 쪽 설정·버그, 또는 토스 쪽 심각한 문제)이므로 **소스에서 처리할 문제가 아니다.** 사람이 확인하고, 원인을 고치면 다음 회차에 정상 확정된다. 회차 중단·조회 순서 강제는 넣지 않는다(신호가 우연에 달려 효과가 약함) | (사용자 작성) | phase-04 4-4 (2026-11-25) |
+| 취소 대사·보상 취소 실패 건의 `NOT_FOUND_PAYMENT` | **(2026-11-26 변경) 취소 대사는 주문을 `CANCEL_REVIEW`로 옮겨 대사 대상에서 빼고 `log.error`를 남긴다.** 매 회차 같은 건을 다시 조회하지 않게 하고, 사람이 볼 건을 상태로 드러낸다. 원인을 고치면 수동 API로 `CANCEL_UNKNOWN`으로 되돌려 대사가 다시 확정한다. 보상 취소 실패 건(승인 쪽)은 이 결정과 달리 승인 대사가 `FAILED` + 재고 복구로 닫는다. 토스 장애 세 겹(다른 금액 승인, 보상 취소 무응답, 결제 기록 유실)이 겹쳐야 생기므로 고치지 않는다(알려진 한계). (이전) 상태를 바꾸지 않고 `log.error`만 남긴다. 이미 결제된 건이 조회되지 않는 것은 결제 결과가 아니라 시스템 장애(우리 쪽 설정·버그, 또는 토스 쪽 심각한 문제)이므로 **소스에서 처리할 문제가 아니다.** 사람이 확인하고, 원인을 고치면 다음 회차에 정상 확정된다. 회차 중단·조회 순서 강제는 넣지 않는다(신호가 우연에 달려 효과가 약함) | (사용자 작성) | phase-04 4-4 (2026-11-25) |
 | 대사·만료의 상태 전이 방식 | **비관적 락으로 통일.** 대상 id를 락 없이 고른 뒤 주문마다 `FOR UPDATE` → 현재 상태 재확인 → 도메인 메서드로 전이. 조건부 UPDATE(원자적 쿼리)는 쓰지 않는다. 범위 조건 UPDATE는 갭 락으로 새 주문 INSERT를 막을 수 있고, 원자적 쿼리는 상태 규칙을 SQL에 한 번 더 두게 된다. 락 시간 차이는 "락 획득~커밋" 사이의 DB 왕복 정도라 뒷정리 작업에서는 의미가 없다 (phase-02 측정에서도 속도로 갈리지 않음, `docs/lock-comparison.md`). 결제 쪽 원자적 쿼리 구현은 이후 걷어낸다 | (사용자 작성) | phase-04 4-4 (2026-11-25) |
 | 대사·만료 대상 조회 인덱스 | `orders (status, updated_at)` (V11). `(status)`만으로는 평소 상태(30분 지난 `PENDING`은 적고 최근 `PENDING`은 많음)에서 만료 쿼리가 `PENDING` 전체를 읽는다(3030행 1.04ms 대 30행 0.015ms). 쓰기 비용은 같다(`updated_at`은 상태 전이와 함께 바뀜). 측정: `docs/evidence/index-explain-reconciliation.md` | (사용자 작성) | phase-04 4-4 (2026-11-25) |
 | 만료·대사 기준 시간 N | **대사:** `PAYMENT_UNKNOWN`·`PAYING`·`CANCEL_UNKNOWN`·`CANCELING` 모두 상태가 된 지(`updated_at`) 5분 지난 것부터 대상, 주기 1분. 짧게 잡았다가 틀리면 돈 사고(늦게 처리된 승인을 `FAILED`로 확정), 길게 잡았다가 틀리면 고객 대기이므로 넉넉하게 시작한다. **운영 근거 없는 초기값**이며 설정으로 빼고 회차 로그를 보고 줄인다. **만료:** 토스를 부르지 않고 DB만 바꾼다(`PENDING`은 PG 요청이 나간 적 없음). 주문 생성 후 30분 지난 `PENDING`이 대상, 주기 5분. 토스 결제 유효 30분을 위젯 표시부터로 본다(현실에서 위젯~결제 완료는 1분 안). 더 오래 머문 고객은 인증을 마쳐도 `ORDER_NOT_PAYABLE`을 받고 새 주문으로 결제한다(돈은 나가지 않음). **대사의 토스 조회 속도 제한:** 초당 5건 (토스 한도 미확인). 모든 값은 운영 근거 없는 초기값 | (사용자 작성) | phase-04 4-4 (2026-11-25) | (사용자 작성) | phase-04 4-4 (2026-11-25) |
 | 대사·만료 운영 장치 | 묶음 500건씩 대상이 없을 때까지 반복, 한 회차 최대 50초. 토스 조회 3번 연속 실패 시 그 회차 중단. 스케줄러 스레드 2개. 회차 로그(대상·처리·조회 실패 건수, 남은 대상 여부, 소요 시간). 수동 호출 API 함께 둠. 보상 취소 실패 건을 다시 취소한 뒤 `failure_code=PAYMENT_AMOUNT_MISMATCH`. 값은 모두 운영 근거 없는 초기값(설정으로 뺌) | (사용자 작성) | phase-04 4-4 (2026-11-25) |
-| 대사 구현 세부 (구현 중 Claude가 정함, **확인 필요**) | ① 대사로 `FAILED` 확정한 결제의 `failure_code`: 승인 안 됨·`NOT_FOUND_PAYMENT`는 새 코드 `PAYMENT_NOT_APPROVED`(409), 조회 `CANCELED`인 보상 취소 실패 건은 승인 금액으로 원래 사유를 되살림(금액 다름 → `PAYMENT_AMOUNT_MISMATCH`, 같음 → `INTERNAL_SERVER_ERROR`), 그 밖의 `CANCELED`는 `PAYMENT_NOT_APPROVED`. 같은 키 재요청에 이 코드가 돌아간다 ② 취소 대사로 무산된 취소 시도의 `failure_code`: 새 코드 `PAYMENT_CANCEL_NOT_APPLIED`(409) ③ 보상 취소 실패 건이 `PAID`로 확정되면 `failure_code`를 지움 ④ 조회 상태 `WAITING_FOR_DEPOSIT`·`PARTIAL_CANCELED`(이 서비스에서 생길 수 없음)는 바꾸지 않고 `log.error` ⑤ 토스 `404 NOT_FOUND`(`NOT_FOUND_PAYMENT`가 아닌 것)는 "결제 없음"으로 단정하지 않고 조회 실패로 봄 ⑥ 금액 불일치 재취소가 실패하면 `PAYMENT_UNKNOWN` + `PAYMENT_CANCEL_FAILED`로 두고, 연속 실패 횟수에 조회 실패와 함께 셈 | (사용자 작성) | phase-04 4-4 (2026-11-26) |
+| 대사 구현 세부 (구현 중 Claude가 정함. 2026-11-26 사용자 확정: ①②④⑤. ③⑥은 정상 흐름에서 생기지 않는 방어 코드라 그대로 둠) | ① 대사로 `FAILED` 확정한 결제의 `failure_code`: 승인 안 됨·`NOT_FOUND_PAYMENT`는 새 코드 `PAYMENT_NOT_APPROVED`(409), 조회 `CANCELED`인 보상 취소 실패 건은 승인 금액으로 원래 사유를 되살림(금액 다름 → `PAYMENT_AMOUNT_MISMATCH`, 같음 → `INTERNAL_SERVER_ERROR`), 그 밖의 `CANCELED`는 `PAYMENT_NOT_APPROVED`. 같은 키 재요청에 이 코드가 돌아간다 ② 취소 대사로 무산된 취소 시도의 `failure_code`: 새 코드 `PAYMENT_CANCEL_NOT_APPLIED`(409) ③ 보상 취소 실패 건이 `PAID`로 확정되면 `failure_code`를 지움 ④ 조회 상태 `WAITING_FOR_DEPOSIT`·`PARTIAL_CANCELED`(이 서비스에서 생길 수 없음)는 바꾸지 않고 `log.error` ⑤ ~~토스 `404 NOT_FOUND`(`NOT_FOUND_PAYMENT`가 아닌 것)는 "결제 없음"으로 단정하지 않고 조회 실패로 봄~~ → **(2026-11-26 사용자 확정)** 조회 응답 분류: 5xx·429·일시 오류(`PROVIDER_ERROR`)·반복 요청 차단(`FORBIDDEN_CONSECUTIVE_REQUEST`)·타임아웃은 조회 실패(다음 회차, 연속 실패에 셈), 401·키 오류는 연동 오류(연속 실패에 셈), **그 밖의 4xx(일반 `404 NOT_FOUND`, 400 등)는 조회 거절**: 정상 흐름에서 생기지 않는 응답이라 그 건만 `log.error` 후 건너뛰고 연속 실패에 세지 않음 (다시 보내도 같은 응답이라, 세면 이런 건 몇 개가 매 회차 대사를 멈춤) ⑥ 금액 불일치 재취소가 실패하면 `PAYMENT_UNKNOWN` + `PAYMENT_CANCEL_FAILED`로 두고, 연속 실패 횟수에 조회 실패와 함께 셈 | (사용자 작성) | phase-04 4-4 (2026-11-26) |
+| 승인 후 DB 반영 실패 | ~~보상 취소 → `FAILED`~~ → **보상 취소하지 않고 결과 모름(`PAYMENT_UNKNOWN` / `UNKNOWN`, `failure_code` 없음, `approved_amount` 기록)으로 두고 대사가 `PAID`로 확정.** 고객이 동의했고 PG도 서버 금액 그대로 승인해 돈이 나갔으며(카드사 승인 문자도 이미 감), 실패한 것은 우리 기록뿐이다. PG 호출 전 시도 기록과 대사가 생겨 되돌리지 않아도 수습할 수 있다. 대사의 "금액 같으면 `PAID`" 기준과 결론을 맞춘다. 금액 불일치는 그대로 보상 취소. 반영이 계속 실패하는 경우(버그 등)는 대사 반영 오류 로그로 사람이 본다 | (사용자 작성) 토스가 승인해 돈이 빠져나갔으므로 결제로 확정하는 게 맞다 | phase-04 4-4 (2026-11-26) |
+| 대사 속도 제한의 단위 | 그대로 둔다: 속도 제한(`Pacer`)은 **대상 한 건마다** 기다린다. 금액 불일치 재취소는 한 건에 PG를 두 번(조회 + 취소) 부르므로 이런 건이 몰리면 PG 호출이 초당 5건을 넘을 수 있다(최대 약 10건). 금액 불일치는 정상 흐름에서 생기지 않는 건이다. 회차 처리량 측정: `docs/evidence/reconciliation-throughput.md` | (사용자 작성) | phase-04 4-4 (2026-11-26) |
+| 가상계좌(입금 대기) 흐름 | **나중에 개발한다** (시점 미정). 지금 코드는 대사 조회에서 `WAITING_FOR_DEPOSIT`이 오면 바꾸지 않고 `log.error`만 남긴다(대사 구현 세부 ④) | (사용자 작성) | phase-04 4-4 (2026-11-26) |
 | 승인 쪽 서킷 브레이커 | 토스 장애가 진행되는 동안 새 결제를 토스에 보내지 않고 바로 거절하는 것은 맞다(결과 모름이 계속 쌓이므로). 승인 흐름을 바꾸는 일이라 4-4 뒤에 별도로 다룬다 | (사용자 작성) | phase-04 4-4 (2026-11-25) |

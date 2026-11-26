@@ -222,6 +222,21 @@ public class Order {
         this.status = OrderStatus.PAID;
     }
 
+    /**
+     * 대사: PG 조회가 NOT_FOUND_PAYMENT다. 결과가 아니라 장애이므로 대사 대상에서 빼고 사람이 확인한다.
+     * {@code CANCELING | CANCEL_UNKNOWN → CANCEL_REVIEW}. 재고·결제는 그대로. (4-4)
+     */
+    public void markCancelReviewByReconciliation() {
+        assertAwaitingCancelReconciliation();
+        this.status = OrderStatus.CANCEL_REVIEW;
+    }
+
+    /** 사람이 원인을 고친 뒤 다시 대사하게 한다. {@code CANCEL_REVIEW → CANCEL_UNKNOWN}. 확정은 대사의 PG 조회로만 한다. (4-4) */
+    public void reopenCancelReview() {
+        assertStatus(OrderStatus.CANCEL_REVIEW, "취소 확인 필요 상태가 아닌 주문은 되돌릴 수 없습니다.");
+        this.status = OrderStatus.CANCEL_UNKNOWN;
+    }
+
     private void assertAwaitingPaymentReconciliation() {
         if (!isAwaitingPaymentReconciliation()) {
             throw new IllegalStateException("승인 대사로 확정할 수 없는 주문 상태입니다. 현재 상태: " + this.status);
