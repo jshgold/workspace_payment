@@ -92,5 +92,43 @@ T0와 다른 것은 PG 조회 결과 하나다 (`DONE` → `ABORTED`). 대사 �
 - 재취소가 붙는 A10도 건당 2.4ms다. 가짜 PG가 바로 응답하므로 PG를 두 번 부르는 비용이 드러나지 않는다. 운영(초당 5)에서는 속도 제한이 대상 한 건마다 걸리므로 처리량은 다른 케이스와 같다.
 - 모두 각 1회 측정이다.
 
+## 케이스별 한 회차 — 운영 설정 (2026-11-26)
+
+같은 측정 코드를 운영 설정으로 돌렸다.
+`./gradlew measurementTest --tests "*ReconciliationCaseRoundMeasurementTest" -Dmeasure.count=50 -Dmeasure.perSecond=5 -Dmeasure.pgDelayMs=100 -i`
+조건: 대상 50건, 6분 경과, 수량 1, **초당 5**, **PG 지연 100ms**, 회차 상한 50초, 묶음 500, 연속 실패 3. PG 지연 100ms는 실제 토스 값이 아니라, 200ms(호출 간격)보다 짧으면 결과가 같아서(T2) 고른 값이다. 23개 모두 통과(상태·재고·회차 멈춤이 예상과 같음, 반영 오류 0). 전체 3분 42초.
+
+| 코드 | 대상 | 조회 결과 | 대상 수 | 확정 | 건너뜀 | PG 실패 | 남은 대상 | 소요 | 건당 | PG 조회 | PG 취소 | 주문 상태 | 재고 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A01 | PAYMENT_UNKNOWN | DONE 금액 같음 | 50 | 50 | 0 | 0 | 없음 | 9944ms | 198.9ms | 50 | 0 | {PAID=50} | 100 → 100 |
+| A02 | AGED_PAYING | DONE 금액 같음 | 50 | 50 | 0 | 0 | 없음 | 9929ms | 198.6ms | 50 | 0 | {PAID=50} | 100 → 100 |
+| A03 | PAYMENT_UNKNOWN | ABORTED | 50 | 50 | 0 | 0 | 없음 | 9932ms | 198.6ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A04 | PAYMENT_UNKNOWN | EXPIRED | 50 | 50 | 0 | 0 | 없음 | 9931ms | 198.6ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A05 | PAYMENT_UNKNOWN | READY | 50 | 50 | 0 | 0 | 없음 | 9931ms | 198.6ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A06 | PAYMENT_UNKNOWN | IN_PROGRESS | 50 | 50 | 0 | 0 | 없음 | 9929ms | 198.6ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A07 | PAYMENT_UNKNOWN | NOT_FOUND_PAYMENT | 50 | 50 | 0 | 0 | 없음 | 9932ms | 198.6ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A08 | PAYMENT_UNKNOWN | CANCELED | 50 | 50 | 0 | 0 | 없음 | 9924ms | 198.5ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A09 | COMPENSATION_FAILED_MISMATCH | CANCELED | 50 | 50 | 0 | 0 | 없음 | 9924ms | 198.5ms | 50 | 0 | {FAILED=50} | 100 → 150 |
+| A10 | COMPENSATION_FAILED_MISMATCH | DONE 금액 다름, 재취소 성공 | 50 | 50 | 0 | 0 | 없음 | 11222ms | 224.4ms | 50 | 50 | {FAILED=50} | 100 → 150 |
+| A11 | COMPENSATION_FAILED_MISMATCH | DONE 금액 다름, 재취소 타임아웃 | 3 | 0 | 0 | 3 | 있음 | 646ms | 215.3ms | 3 | 3 | {PAYMENT_UNKNOWN=50} | 100 → 100 |
+| A12 | COMPENSATION_FAILED_SAME | DONE 금액 같음 | 50 | 50 | 0 | 0 | 없음 | 9925ms | 198.5ms | 50 | 0 | {PAID=50} | 100 → 100 |
+| A13 | PAYMENT_UNKNOWN | 조회 타임아웃 | 3 | 0 | 0 | 3 | 있음 | 506ms | 168.7ms | 3 | 0 | {PAYMENT_UNKNOWN=50} | 100 → 100 |
+| A14 | PAYMENT_UNKNOWN | 조회 거절(404) | 50 | 0 | 50 | 0 | 없음 | 9908ms | 198.2ms | 50 | 0 | {PAYMENT_UNKNOWN=50} | 100 → 100 |
+| A15 | PAYMENT_UNKNOWN | WAITING_FOR_DEPOSIT | 50 | 0 | 50 | 0 | 없음 | 9910ms | 198.2ms | 50 | 0 | {PAYMENT_UNKNOWN=50} | 100 → 100 |
+| A16 | PAYMENT_UNKNOWN | PARTIAL_CANCELED | 50 | 0 | 50 | 0 | 없음 | 9908ms | 198.2ms | 50 | 0 | {PAYMENT_UNKNOWN=50} | 100 → 100 |
+| C01 | CANCEL_UNKNOWN | CANCELED | 50 | 50 | 0 | 0 | 없음 | 9919ms | 198.4ms | 50 | 0 | {CANCELED=50} | 100 → 150 |
+| C02 | AGED_CANCELING | CANCELED | 50 | 50 | 0 | 0 | 없음 | 9929ms | 198.6ms | 50 | 0 | {CANCELED=50} | 100 → 150 |
+| C03 | CANCEL_UNKNOWN | DONE | 50 | 50 | 0 | 0 | 없음 | 9924ms | 198.5ms | 50 | 0 | {PAID=50} | 100 → 100 |
+| C04 | CANCEL_UNKNOWN | NOT_FOUND_PAYMENT | 50 | 50 | 0 | 0 | 없음 | 9922ms | 198.4ms | 50 | 0 | {CANCEL_REVIEW=50} | 100 → 100 |
+| C05 | CANCEL_UNKNOWN | 조회 타임아웃 | 3 | 0 | 0 | 3 | 있음 | 512ms | 170.7ms | 3 | 0 | {CANCEL_UNKNOWN=50} | 100 → 100 |
+| C06 | CANCEL_UNKNOWN | 조회 거절(404) | 50 | 0 | 50 | 0 | 없음 | 9910ms | 198.2ms | 50 | 0 | {CANCEL_UNKNOWN=50} | 100 → 100 |
+| C07 | CANCEL_UNKNOWN | ABORTED | 50 | 0 | 50 | 0 | 없음 | 9908ms | 198.2ms | 50 | 0 | {CANCEL_UNKNOWN=50} | 100 → 100 |
+
+- **확정·건너뜀 모두 건당 약 198ms로 같다.** 속도 제한 간격(200ms)이 건당 시간을 정하고, 그 안에 PG 지연 100ms와 DB 2~3ms가 들어간다. 50건이 약 9.9초이므로 50초 회차에 약 250건이 처리된다(T1과 같음).
+- **건너뛰는 케이스도 PG 호출을 한 번 쓰므로 같은 시간이 든다.** 회차는 멈추지 않고 끝까지 돈다.
+- **멈추는 케이스는 3건, 약 0.5초 만에 회차가 끝난다.** 나머지 47건은 다음 회차로 넘어간다.
+- **A10만 건당 224ms다.** 조회와 재취소로 PG를 두 번(각 100ms) 부르므로 호출 간격 200ms를 넘는다. 앞 절에서 "운영에서는 처리량이 다른 케이스와 같다"고 적은 것은 틀렸다. 이 케이스는 토스가 다른 금액으로 승인해야 생기므로 현실에서는 생기지 않는다.
+- 모두 각 1회 측정이다. 서버를 띄운 스케줄러 동작이 아니라, 스케줄러가 부르는 메서드를 테스트에서 직접 부른 결과다.
+
 ## 측정 뒤 정할 것 (아직 정하지 않음)
 - "묶음 500 / 50초 / 초당 5" 조합을 바꿀지 (묶음을 250에 맞출지, 속도 제한을 올릴지 등). 토스 조회 한도가 확인되지 않아 값은 그대로 둔다. 운영 회차 로그를 보고 조정한다.
