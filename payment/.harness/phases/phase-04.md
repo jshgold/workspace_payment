@@ -113,11 +113,11 @@
   - **진행 상황 (2026-11-26):** 설계 확정, 코드 변경 없음. 결정은 `intent.md` 8절("PG 호출 재시도", "PG 멱등키 값"), 논의 경위는 `docs/payment-pg-idempotency-discussion.md`. ~~다음 할 일: 구현 → 검증~~ — 완료 (2026-11-26). `Idempotency-Key` 헤더를 승인·취소에만 붙임, 결과 모름이면 같은 PG 키로 1번 재시도(`PgRetry`, `app.pg.retry-delay` 200ms), 가짜 PG가 키별 첫 응답을 저장·반환. `PgIdempotencyKeyTest`(응답 유실 → 재시도 → 호출 2번·승인 1번·`PAID`, 취소도 같음, 거절 뒤 2차 취소는 새 키) 포함 결제·주문 패키지 272개 통과. 실제 토스의 replay 동작(5xx 저장 여부 포함)은 4-6 수동 E2E에서 확인.
   - **학습 포인트:** 우리 쪽 `Idempotency-Key`(client → 서버)와 PG 쪽 멱등 키(서버 → PG)는 무엇이 다르고, 각각 어떤 중복을 막나?
 
-- [ ] **4-6. 테스트 전략과 수동 E2E**
+- [x] **4-6. 테스트 전략과 수동 E2E**
   - 자동 테스트: 가짜 HTTP 서버(예: WireMock)로 PG 응답(성공/거절/타임아웃/5xx/연결 실패)을 흉내 내 실제 클라이언트 구현체를 검증
   - 수동 E2E: 상품 등록 → 주문 → 테스트 결제창에서 `paymentKey` 획득 → 승인 → 취소 → 재고 확인
   - **완료 조건:** 자동 테스트가 실제 PG 없이 통과하고, 수동 E2E 결과(요청/응답/상태 변화)가 기록된다.
-  - **진행 상황 (2026-11-27):** 자동 테스트 완료. 응답 분류(성공·거절·5xx 등)는 기존 `MockRestServiceServer` 테스트가 맡고, WireMock으로는 실제 소켓이 필요한 네트워크 장애만 추가했다. `TossPaymentClientNetworkFaultTest`(승인·취소·조회 × 연결 거부/읽기 타임아웃/연결 리셋/응답 없이 끊김/본문 도중 끊김, 15개)와 `PgRetryOverHttpTest`(재시도 두 요청에 같은 `Idempotency-Key`, 3개)를 추가했다. 실측: 읽기 타임아웃은 `HttpTimeoutException`(연결 타임아웃의 부모 타입)으로 올라오고, JDK HttpClient는 GET만 스스로 1번 다시 보낸다. **남은 것:** 수동 E2E.
+  - **진행 상황 (2026-11-27):** 자동 테스트 완료. 응답 분류(성공·거절·5xx 등)는 기존 `MockRestServiceServer` 테스트가 맡고, WireMock으로는 실제 소켓이 필요한 네트워크 장애만 추가했다. `TossPaymentClientNetworkFaultTest`(승인·취소·조회 × 연결 거부/읽기 타임아웃/연결 리셋/응답 없이 끊김/본문 도중 끊김, 15개)와 `PgRetryOverHttpTest`(재시도 두 요청에 같은 `Idempotency-Key`, 3개)를 추가했다. 실측: 읽기 타임아웃은 `HttpTimeoutException`(연결 타임아웃의 부모 타입)으로 올라오고, JDK HttpClient는 GET만 스스로 1번 다시 보낸다. ~~**남은 것:** 수동 E2E.~~ — 완료 (2026-11-28). E1~E5 모두 통과, 결과는 `docs/toss-manual-e2e.md` 7절. 실제 토스는 `ALREADY_PROCESSED_PAYMENT`·`ALREADY_CANCELED_PAYMENT`를 409가 아니라 400으로 준다(우리는 코드로 판정해 맞게 분류). 같은 PG 키 재전송은 200으로 첫 결과를 replay한다. 5xx 저장 여부는 미확인. 조회 응답의 `x-ratelimit-max-limit-per-minute: 200`이 대사 속도 제한(초당 5건 = 분당 300건)보다 작다. 연속 5건에도 `remaining`이 줄지 않아 헤더는 한도 안내로 보고, 계수는 토스 내부에서 한다고 본다.
   - **학습 포인트:** 외부 API를 쓰는 코드의 테스트를 어디까지 자동화하고, 어디서부터 수동으로 확인해야 하나?
 
 ---
