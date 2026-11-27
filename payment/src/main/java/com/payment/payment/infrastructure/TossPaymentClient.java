@@ -40,7 +40,9 @@ import lombok.extern.slf4j.Slf4j;
  * 401, UNAUTHORIZED_KEY 등, 연결 실패  → 요청이 승인까지 가지 않음 (PaymentGatewayException). 돈 안 나감 → FAILED + 재고 복구
  * 5xx, 읽기 타임아웃, 응답 유실         → 결과 모름 (PaymentTimeoutException). 같은 PG 멱등키로 1번 재시도,
  *                                        그래도 모르면 PAYMENT_UNKNOWN / UNKNOWN → 대사
- * ALREADY_PROCESSED_PAYMENT, 409       → 결과 모름. 이미 승인됐을 수 있어 실패로 확정하면 안 된다
+ * ALREADY_PROCESSED_PAYMENT, 409,      → 결과 모름. 이미 승인됐거나 처리 중이거나 일시 오류라 실패로 확정하면 안 된다
+ * ALREADY_PROCESSING_REQUEST, PROVIDER_ERROR
+ *                                        (실제 토스는 이 코드들을 400으로 준다. 상태 코드가 아니라 코드로 판정한다)
  * 2xx인데 본문이 이상함                  → 결과 모름. 돈이 나갔을 수 있다
  * </pre>
  * 4xx와 5xx를 같게 다루면 둘 중 하나가 사고가 난다. 5xx를 거절로 보면 승인된 결제를 FAILED로 확정해 돈은 나갔는데 주문은 실패가 되고
@@ -75,8 +77,14 @@ public class TossPaymentClient implements PaymentClient {
      */
     private static final Set<String> CONFIG_ERROR_CODES = Set.of("UNAUTHORIZED_KEY", "INVALID_API_KEY");
 
-    /** 4xx지만 이미 승인됐거나 승인 중일 수 있는 코드. 거절로 확정하면 안 된다. */
-    private static final Set<String> UNKNOWN_RESULT_CODES = Set.of("ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING");
+    /**
+     * 4xx지만 이미 승인됐거나 승인 중이거나 일시 오류인 코드. 거절로 확정하면 안 된다.
+     * 결과 모름으로 던지면 같은 PG 멱등키로 1번 재시도하고, 그래도 모르면 대사가 확정한다.
+     * PROVIDER_ERROR(400, 일시 오류)는 intent 8절 "PG 호출 재시도" 결정에 이미 있던 코드이고,
+     * ALREADY_PROCESSING_REQUEST(400, 이미 처리 중)는 승인될 수 있어 실패로 닫으면 이중 결제가 될 수 있다. (2026-11-28 추가)
+     */
+    private static final Set<String> UNKNOWN_RESULT_CODES = Set.of(
+            "ALREADY_PROCESSED_PAYMENT", "IDEMPOTENT_REQUEST_PROCESSING", "PROVIDER_ERROR", "ALREADY_PROCESSING_REQUEST");
 
     /** 4xx지만 다시 조회하면 될 수 있는 조회 응답 코드. 일시 오류, 반복 요청 차단. (429는 코드와 상관없이 같다) */
     private static final Set<String> LOOKUP_TRANSIENT_CODES = Set.of("PROVIDER_ERROR", "FORBIDDEN_CONSECUTIVE_REQUEST");

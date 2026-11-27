@@ -141,9 +141,11 @@ class TossPaymentClientTest {
             "500, FAILED_INTERNAL_SYSTEM_PROCESSING",
             "500, FAILED_PAYMENT_INTERNAL_SYSTEM_PROCESSING",
             "400, ALREADY_PROCESSED_PAYMENT",
-            "409, IDEMPOTENT_REQUEST_PROCESSING"
+            "409, IDEMPOTENT_REQUEST_PROCESSING",
+            "400, ALREADY_PROCESSING_REQUEST",
+            "400, PROVIDER_ERROR"
     })
-    @DisplayName("5xx와, 4xx지만 이미 승인됐을 수 있는 코드는 결과를 모르므로 PaymentTimeoutException이다")
+    @DisplayName("5xx와, 4xx지만 이미 승인됐거나 처리 중이거나 일시 오류인 코드는 결과를 모르므로 PaymentTimeoutException이다")
     void unknownResult(int status, String code) {
         // given
         respondWith(status, error(code, "처리 결과를 알 수 없음"));

@@ -18,7 +18,7 @@ import jakarta.validation.constraints.Positive;
  * @param batchSize                    한 번에 고르는 대상 수. 대상이 없을 때까지 묶음을 반복한다
  * @param maxRoundDuration             한 회차 최대 시간. 넘으면 남은 대상은 다음 회차로 넘긴다
  * @param maxConsecutivePgFailures     PG 호출이 이만큼 연속 실패하면 그 회차를 멈춘다 (PG 장애 중 헛호출 방지)
- * @param pgCallsPerSecond             대사가 PG를 부르는 초당 상한 (토스 한도 미확인)
+ * @param pgCallsPerSecond             대사가 PG를 부르는 초당 상한 (토스 조회 한도 분당 200건보다 낮게)
  */
 @Validated
 @ConfigurationProperties(prefix = "app.reconciliation")
@@ -28,5 +28,5 @@ public record ReconciliationProperties(
         @Positive @DefaultValue("500") int batchSize,
         @NotNull @DefaultValue("50s") Duration maxRoundDuration,
         @Positive @DefaultValue("3") int maxConsecutivePgFailures,
-        @Positive @DefaultValue("5") int pgCallsPerSecond) {
+        @Positive @DefaultValue("3") int pgCallsPerSecond) {
 }

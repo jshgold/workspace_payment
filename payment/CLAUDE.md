@@ -50,3 +50,6 @@
 2. **데이터:** `docker compose down -v`, `docker volume rm`, `docker system prune`, `./gradlew flywayClean`, SQL `DROP` / `TRUNCATE`, `ddl-auto`를 `create` / `create-drop`으로 변경
 3. **시스템:** `sudo`, `rm -rf`, `chmod`, `chown`, `kill -9`, `killall`, `pkill`, 프로젝트 루트 바깥 파일 탐색·수정
 4. **시크릿:** `.env`, `.env.*`, `application-secret.yml`, `*.pem`, `*credentials*` 읽기, `printenv` / `env` / `export`로 환경변수 조회
+
+## 5. 알아둘 사실
+- **토스 "요청 차단" 이력의 실제 원인:** `intent.md` 8절 "실제 PG 확인 시점"의 "이전 테스트 중 토스에서 요청이 차단된 적이 있다"는, 토스 PG를 거쳐 카카오페이로 2억원·3천만원 결제를 요청했다가 **카카오페이가 고액 결제를 막은 것**이다. 토스가 API 호출 횟수·속도 때문에 막은 것이 아니다. 토스 호출 수에 관한 위험을 판단할 때 이 이력을 근거로 쓰지 않는다. (고액·간편결제 테스트에서만 주의 근거로 쓴다)

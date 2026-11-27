@@ -31,7 +31,7 @@ app:
     batch-size: 500
     max-round-duration: 50s
     max-consecutive-pg-failures: 3
-    pg-calls-per-second: 5  # 토스 한도 미확인
+    pg-calls-per-second: 3  # 토스 조회 한도 분당 200건(응답 헤더, 2026-11-27 관찰)보다 낮게. 분당 180건
   pg:
     retry-delay: 200ms      # PG 결과 모름일 때 같은 PG 멱등키로 1번 다시 묻기 전 대기 (phase-04 4-5, 근거 없는 초기값)
   expiration:
