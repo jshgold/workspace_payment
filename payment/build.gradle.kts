@@ -61,6 +61,8 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     testImplementation("org.testcontainers:testcontainers-mysql")
+    // 토스 클라이언트 네트워크 장애 테스트 (phase-04 4-6). Jetty·Jackson을 내부에 숨긴 standalone판이라 Boot 4 의존성과 부딪히지 않는다.
+    testImplementation("org.wiremock:wiremock-standalone:3.13.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

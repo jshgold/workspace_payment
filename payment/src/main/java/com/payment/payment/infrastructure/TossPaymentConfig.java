@@ -25,7 +25,7 @@ public class TossPaymentConfig {
      * 인증은 문서대로 {@code Authorization: Basic base64(시크릿키:)} 이고, 키 뒤의 콜론을 빠뜨리면 인증에 실패한다.
      */
     @Bean
-    RestClient tossRestClient(TossPaymentProperties properties) {
+    public RestClient tossRestClient(TossPaymentProperties properties) {
         HttpClient httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(properties.connectTimeout())
