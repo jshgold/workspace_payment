@@ -39,4 +39,6 @@ out/
 commit_reference
 code-review
 .tokensave
+server.log
+front.log
 
