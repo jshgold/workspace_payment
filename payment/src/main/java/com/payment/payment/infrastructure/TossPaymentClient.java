@@ -35,15 +35,16 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <h3>응답 분류: "돈이 나갔는지 아는가"</h3>
  * <pre>
- * 2xx + DONE + 주문번호 일치   → 승인 성공
- * 4xx (아래 예외 제외)          → 명확한 거절 (PaymentDeclinedException). 돈 안 나감 → 호출자가 PENDING으로 복구
- * 401, UNAUTHORIZED_KEY 등      → 우리 연동 문제 (PaymentGatewayException). 돈 안 나감 → PENDING 복구
- * 5xx, 타임아웃, I/O 오류        → 결과 모름 (PaymentTimeoutException). 호출자가 PAYING 유지
- * ALREADY_PROCESSED_PAYMENT, 409 → 결과 모름. 이미 승인됐을 수 있어 되돌리면 안 된다
- * 2xx인데 본문이 이상함           → 결과 모름. 돈이 나갔을 수 있다
+ * 2xx + DONE + 주문번호 일치          → 승인 성공. 호출자가 PAID / APPROVED로 반영
+ * 4xx (아래 예외 제외)                 → 명확한 거절 (PaymentDeclinedException). 돈 안 나감 → FAILED + 재고 복구
+ * 401, UNAUTHORIZED_KEY 등, 연결 실패  → 요청이 승인까지 가지 않음 (PaymentGatewayException). 돈 안 나감 → FAILED + 재고 복구
+ * 5xx, 읽기 타임아웃, 응답 유실         → 결과 모름 (PaymentTimeoutException). 같은 PG 멱등키로 1번 재시도,
+ *                                        그래도 모르면 PAYMENT_UNKNOWN / UNKNOWN → 대사
+ * ALREADY_PROCESSED_PAYMENT, 409       → 결과 모름. 이미 승인됐을 수 있어 실패로 확정하면 안 된다
+ * 2xx인데 본문이 이상함                  → 결과 모름. 돈이 나갔을 수 있다
  * </pre>
- * 4xx와 5xx를 같게 다루면 둘 중 하나가 사고가 난다. 5xx를 거절로 보면 승인된 결제를 PENDING으로 되돌려 이중 결제가 되고,
- * 4xx를 모름으로 보면 확정된 거절이 PAYING으로 남아 사용자가 재시도하지 못한다.
+ * 4xx와 5xx를 같게 다루면 둘 중 하나가 사고가 난다. 5xx를 거절로 보면 승인된 결제를 FAILED로 확정해 돈은 나갔는데 주문은 실패가 되고
+ * (고객이 새 주문으로 다시 결제하면 이중 결제), 4xx를 모름으로 보면 확정된 거절이 "결제 확인 중"으로 묶여 재고와 화면이 대사까지 잡힌다.
  */
 @Slf4j
 @Component
